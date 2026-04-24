@@ -887,6 +887,9 @@ class OpenAIBackendAPI:
             return text[len(history_text):]
         return text
 
+    def _normalize_assistant_text(self, text: str, history_text: str) -> str:
+        return self._strip_history_prefix(text, history_text)
+
     def _text_from_message(self, message: Dict[str, Any]) -> str:
         """从单条 message 结构中提取文本。"""
         content = message.get("content") or {}
@@ -1086,7 +1089,7 @@ class OpenAIBackendAPI:
             }],
         }
 
-    def _apply_text_patch(self, event: Dict[str, Any], current_text: str) -> str:
+    def _apply_text_patch(self, event: Dict[str, Any], current_text: str, history_text: str = "") -> str:
         """从 patch 事件里恢复最新文本。"""
         operations = event.get("v")
         if not isinstance(operations, list):
@@ -1100,16 +1103,16 @@ class OpenAIBackendAPI:
             if item.get("o") == "append":
                 text += str(item.get("v", ""))
             if item.get("o") == "replace":
-                text = str(item.get("v", ""))
+                text = self._normalize_assistant_text(str(item.get("v", "")), history_text)
         return text
 
-    def _next_assistant_text(self, event: Dict[str, Any], current_text: str) -> str:
+    def _next_assistant_text(self, event: Dict[str, Any], current_text: str, history_text: str = "") -> str:
         """从 SSE 事件中推导当前 assistant 全量文本。"""
         message = event.get("message")
         if isinstance(message, dict) and (message.get("author") or {}).get("role") == "assistant":
             text = self._text_from_message(message)
             if text:
-                return text
+                return self._normalize_assistant_text(text, history_text)
 
         value = event.get("v")
         if isinstance(value, dict):
@@ -1117,9 +1120,9 @@ class OpenAIBackendAPI:
             if isinstance(message, dict) and (message.get("author") or {}).get("role") == "assistant":
                 text = self._text_from_message(message)
                 if text:
-                    return text
+                    return self._normalize_assistant_text(text, history_text)
 
-        return self._apply_text_patch(event, current_text)
+        return self._apply_text_patch(event, current_text, history_text)
 
     def _encoding_for_model(self, model: str):
         """按模型选择 tokenizer，失败时回退到通用编码。"""
@@ -1197,6 +1200,29 @@ class OpenAIBackendAPI:
             if isinstance(content, str) and content:
                 parts.append(content)
         return "".join(parts)
+
+    def _assistant_history_messages(self, messages: list[Dict[str, Any]]) -> list[str]:
+        parts = []
+        for message in messages:
+            if message.get("role") != "assistant":
+                continue
+            content = message.get("content", "")
+            if isinstance(content, str) and content:
+                parts.append(content)
+        return parts
+
+    def _event_assistant_text(self, event: Dict[str, Any], history_text: str = "") -> str:
+        message = event.get("message")
+        if isinstance(message, dict) and (message.get("author") or {}).get("role") == "assistant":
+            return self._normalize_assistant_text(self._text_from_message(message), history_text)
+
+        value = event.get("v")
+        if isinstance(value, dict):
+            message = value.get("message")
+            if isinstance(message, dict) and (message.get("author") or {}).get("role") == "assistant":
+                return self._normalize_assistant_text(self._text_from_message(message), history_text)
+
+        return ""
 
     def _last_event(self, events: list[Dict[str, Any]]) -> Dict[str, Any]:
         """返回最后一个非终止事件，方便排查问题。"""
@@ -1343,7 +1369,9 @@ class OpenAIBackendAPI:
         completion_id = f"chatcmpl-{new_uuid()}"
         created = int(time.time())
         history_assistant_text = self._assistant_history_text(messages)
-        current_text = history_assistant_text
+        history_assistant_messages = self._assistant_history_messages(messages)
+        history_assistant_index = 0
+        current_text = ""
         sent_role = False
         self._bootstrap()
         requirements = self._get_chat_requirements(authenticated=bool(self.access_token))
@@ -1353,7 +1381,16 @@ class OpenAIBackendAPI:
         for event in self._stream_events(path, requirements, payload):
             if event.get("done"):
                 break
-            next_text = self._next_assistant_text(event, current_text)
+            event_assistant_text = self._event_assistant_text(event, history_assistant_text)
+            if (
+                history_assistant_index < len(history_assistant_messages)
+                and event_assistant_text
+                and event_assistant_text == history_assistant_messages[history_assistant_index]
+            ):
+                history_assistant_index += 1
+                current_text = ""
+                continue
+            next_text = self._next_assistant_text(event, current_text, history_assistant_text)
             if next_text == current_text:
                 continue
             delta = next_text[len(current_text):] if next_text.startswith(current_text) else next_text
