@@ -451,12 +451,32 @@ def text_backend() -> OpenAIBackendAPI:
 
 
 def stream_text_deltas(backend: OpenAIBackendAPI, request: ConversationRequest) -> Iterator[str]:
-    for event in conversation_events(backend, messages=request.messages, model=request.model, prompt=request.prompt):
-        if event.get("type") != "conversation.delta":
-            continue
-        delta = str(event.get("delta") or "")
-        if delta:
-            yield delta
+    attempted_tokens: set[str] = set()
+    emitted = False
+    while True:
+        token = account_service.get_text_access_token(attempted_tokens)
+        if not token:
+            token = getattr(backend, "access_token", "")
+        if not token or token in attempted_tokens:
+            raise RuntimeError("no available text account")
+        attempted_tokens.add(token)
+        try:
+            active_backend = OpenAIBackendAPI(access_token=token)
+            for event in conversation_events(active_backend, messages=request.messages, model=request.model, prompt=request.prompt):
+                if event.get("type") != "conversation.delta":
+                    continue
+                delta = str(event.get("delta") or "")
+                if delta:
+                    emitted = True
+                    yield delta
+            account_service.mark_text_used(token)
+            return
+        except Exception as exc:
+            error_message = str(exc)
+            if not emitted and is_token_invalid_error(error_message):
+                account_service.remove_invalid_token(token, "text_stream")
+                continue
+            raise
 
 
 def collect_text(backend: OpenAIBackendAPI, request: ConversationRequest) -> str:

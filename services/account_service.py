@@ -278,13 +278,37 @@ class AccountService:
                 f"status={account.get('status') if account else 'unknown'}"
             )
 
-    def get_text_access_token(self) -> str:
+    def get_text_access_token(self, excluded_tokens: set[str] | None = None) -> str:
+        excluded = {self._clean_token(token) for token in (excluded_tokens or set()) if self._clean_token(token)}
         with self._lock:
-            for account in self._accounts:
-                status = self._clean_token(account.get("status"))
-                if status not in {"禁用", "异常"}:
-                    return self._clean_token(account.get("access_token"))
-        return ""
+            candidates = [
+                token
+                for account in self._accounts
+                if self._clean_token(account.get("status")) not in {"禁用", "异常", "限流"}
+                   and (token := self._clean_token(account.get("access_token")))
+                   and token not in excluded
+            ]
+            if not candidates:
+                return ""
+            access_token = candidates[self._index % len(candidates)]
+            self._index += 1
+            return access_token
+
+    def mark_text_used(self, access_token: str) -> None:
+        access_token = self._clean_token(access_token)
+        if not access_token:
+            return
+        with self._lock:
+            index = self._find_account_index(access_token)
+            if index < 0:
+                return
+            next_item = dict(self._accounts[index])
+            next_item["last_used_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            account = self._normalize_account(next_item)
+            if account is None:
+                return
+            self._accounts[index] = account
+            self._save_accounts()
 
     def remove_invalid_token(self, access_token: str, event: str) -> bool:
         if not config.auto_remove_invalid_accounts:
