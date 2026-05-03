@@ -3,9 +3,9 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
+import { getValidatedAuthSession } from "@/lib/auth-session";
 import {
   getDefaultRouteForRole,
-  getStoredAuthSession,
   type AuthRole,
   type StoredAuthSession,
 } from "@/store/auth";
@@ -26,7 +26,7 @@ export function useAuthGuard(allowedRoles?: AuthRole[]): UseAuthGuardResult {
 
     const load = async () => {
       const roleList = allowedRolesKey ? (allowedRolesKey.split(",") as AuthRole[]) : [];
-      const storedSession = await getStoredAuthSession();
+      const storedSession = await getValidatedAuthSession();
       if (!active) {
         return;
       }
@@ -66,7 +66,7 @@ export function useRedirectIfAuthenticated() {
     let active = true;
 
     const load = async () => {
-      const storedSession = await getStoredAuthSession();
+      const storedSession = await getValidatedAuthSession();
       if (!active) {
         return;
       }

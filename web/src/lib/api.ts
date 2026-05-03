@@ -344,7 +344,7 @@ export async function createUserKey(name: string) {
   });
 }
 
-export async function updateUserKey(keyId: string, updates: { enabled?: boolean; name?: string }) {
+export async function updateUserKey(keyId: string, updates: { enabled?: boolean; name?: string; key?: string }) {
   return httpRequest<{ item: UserKey; items: UserKey[] }>(`/api/auth/users/${keyId}`, {
     method: "POST",
     body: updates,

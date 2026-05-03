@@ -6,8 +6,9 @@ import { Github } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 
 import webConfig from "@/constants/common-env";
-import { clearStoredAuthSession, getStoredAuthSession, type StoredAuthSession } from "@/store/auth";
+import { getValidatedAuthSession } from "@/lib/auth-session";
 import { cn } from "@/lib/utils";
+import { clearStoredAuthSession, type StoredAuthSession } from "@/store/auth";
 
 const adminNavItems = [
   { href: "/image", label: "画图" },
@@ -37,7 +38,7 @@ export function TopNav() {
         return;
       }
 
-      const storedSession = await getStoredAuthSession();
+      const storedSession = await getValidatedAuthSession();
       if (!active) {
         return;
       }
@@ -61,6 +62,7 @@ export function TopNav() {
 
   const navItems = session.role === "admin" ? adminNavItems : userNavItems;
   const roleLabel = session.role === "admin" ? "管理员" : "普通用户";
+  const displayName = session.name.trim() || roleLabel;
 
   return (
     <header className="border-b border-stone-100/50">
@@ -112,7 +114,7 @@ export function TopNav() {
         </nav>
         <div className="hidden items-center justify-end gap-2 sm:flex sm:gap-3">
           <span className="hidden rounded-md bg-stone-100 px-2 py-1 text-[10px] font-medium text-stone-500 sm:inline-block sm:text-[11px]">
-            {roleLabel}
+            {roleLabel} · {displayName}
           </span>
           <span className="hidden rounded-md bg-stone-100 px-2 py-1 text-[10px] font-medium text-stone-500 sm:inline-block sm:text-[11px]">
             v{webConfig.appVersion}

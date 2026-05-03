@@ -119,6 +119,36 @@ class AuthServiceTests(unittest.TestCase):
             self.assertEqual(authed["id"], item["id"])
             self.assertIsNotNone(authed["last_used_at"])
 
+    def test_update_user_key_replaces_raw_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AuthService(JSONStorageBackend(Path(tmp_dir) / "accounts.json", Path(tmp_dir) / "auth_keys.json"))
+            item, raw_key = service.create_key(role="user", name="Alice")
+
+            updated = service.update_key(item["id"], {"key": "sk-user-custom-key"}, role="user")
+
+            self.assertIsNotNone(updated)
+            self.assertIsNone(service.authenticate(raw_key))
+
+            authed = service.authenticate("sk-user-custom-key")
+            self.assertIsNotNone(authed)
+            self.assertEqual(authed["id"], item["id"])
+
+    def test_user_key_name_must_be_unique(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AuthService(JSONStorageBackend(Path(tmp_dir) / "accounts.json", Path(tmp_dir) / "auth_keys.json"))
+            first, _ = service.create_key(role="user", name="Alice")
+            second, _ = service.create_key(role="user", name="Bob")
+
+            with self.assertRaisesRegex(ValueError, "这个名称已经在使用中了"):
+                service.create_key(role="user", name="Alice")
+
+            with self.assertRaisesRegex(ValueError, "这个名称已经在使用中了"):
+                service.update_key(second["id"], {"name": "Alice"}, role="user")
+
+            updated = service.update_key(first["id"], {"name": "Alice"}, role="user")
+            self.assertIsNotNone(updated)
+            self.assertEqual(updated["name"], "Alice")
+
 
 if __name__ == "__main__":
     unittest.main()

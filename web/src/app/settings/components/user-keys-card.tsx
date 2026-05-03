@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Ban, CheckCircle2, Copy, KeyRound, LoaderCircle, Plus, Trash2 } from "lucide-react";
+import { Ban, CheckCircle2, Copy, KeyRound, LoaderCircle, Pencil, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -45,6 +45,9 @@ export function UserKeysCard() {
   const [pendingIds, setPendingIds] = useState<Set<string>>(() => new Set());
   const [revealedKey, setRevealedKey] = useState("");
   const [deletingItem, setDeletingItem] = useState<UserKey | null>(null);
+  const [editingItem, setEditingItem] = useState<UserKey | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editKey, setEditKey] = useState("");
 
   const load = async () => {
     setIsLoading(true);
@@ -125,6 +128,40 @@ export function UserKeysCard() {
     }
   };
 
+  const openEditDialog = (item: UserKey) => {
+    setEditingItem(item);
+    setEditName(item.name);
+    setEditKey("");
+  };
+
+  const handleEdit = async () => {
+    if (!editingItem) {
+      return;
+    }
+    const item = editingItem;
+    const trimmedName = editName.trim();
+    const trimmedKey = editKey.trim();
+    if (trimmedName === item.name && !trimmedKey) {
+      setEditingItem(null);
+      return;
+    }
+    setItemPending(item.id, true);
+    try {
+      const data = await updateUserKey(item.id, {
+        ...(trimmedName !== item.name ? { name: trimmedName } : {}),
+        ...(trimmedKey ? { key: trimmedKey } : {}),
+      });
+      setItems(data.items);
+      setEditingItem(null);
+      setEditKey("");
+      toast.success(trimmedKey ? "用户密钥已更新" : "用户名称已更新");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "更新用户密钥失败");
+    } finally {
+      setItemPending(item.id, false);
+    }
+  };
+
   const handleCopy = async (value: string) => {
     try {
       await navigator.clipboard.writeText(value);
@@ -200,6 +237,16 @@ export function UserKeysCard() {
                     </div>
 
                     <div className="flex items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="h-9 rounded-xl border-stone-200 bg-white px-4 text-stone-700"
+                        onClick={() => openEditDialog(item)}
+                        disabled={isPending}
+                      >
+                        {isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Pencil className="size-4" />}
+                        编辑
+                      </Button>
                       <Button
                         type="button"
                         variant="outline"
@@ -301,6 +348,71 @@ export function UserKeysCard() {
             >
               {deletingItem && pendingIds.has(deletingItem.id) ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
               删除
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(editingItem)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setEditingItem(null);
+            setEditKey("");
+          }
+        }}
+      >
+        <DialogContent className="rounded-2xl p-6">
+          <DialogHeader className="gap-2">
+            <DialogTitle>编辑用户密钥</DialogTitle>
+            <DialogDescription className="text-sm leading-6">
+              可以修改备注名称；如需更换专用密钥，直接填写新的原始密钥即可。留空则保持当前密钥不变。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-stone-700">名称</label>
+              <Input
+                value={editName}
+                onChange={(event) => setEditName(event.target.value)}
+                placeholder="例如：设计同学 A、运营临时账号"
+                className="h-11 rounded-xl border-stone-200 bg-white"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-stone-700">新的专用密钥（可选）</label>
+              <Input
+                value={editKey}
+                onChange={(event) => setEditKey(event.target.value)}
+                placeholder="例如：sk-your-custom-user-key"
+                className="h-11 rounded-xl border-stone-200 bg-white font-mono"
+              />
+              <p className="text-xs leading-5 text-stone-500">
+                保存后旧密钥会立即失效，新密钥生效。系统仍只保存哈希，不会回显当前密钥。
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="secondary"
+              className="h-10 rounded-xl bg-stone-100 px-5 text-stone-700 hover:bg-stone-200"
+              onClick={() => {
+                setEditingItem(null);
+                setEditKey("");
+              }}
+              disabled={editingItem ? pendingIds.has(editingItem.id) : false}
+            >
+              取消
+            </Button>
+            <Button
+              type="button"
+              className="h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800"
+              onClick={() => void handleEdit()}
+              disabled={editingItem ? pendingIds.has(editingItem.id) : false}
+            >
+              {editingItem && pendingIds.has(editingItem.id) ? <LoaderCircle className="size-4 animate-spin" /> : <Pencil className="size-4" />}
+              保存
             </Button>
           </DialogFooter>
         </DialogContent>
