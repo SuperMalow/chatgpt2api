@@ -224,6 +224,7 @@ class ConversationRequest:
     response_format: str = "b64_json"
     base_url: str | None = None
     message_as_error: bool = False
+    stream_progress: bool = False
 
 
 @dataclass
@@ -565,7 +566,24 @@ def stream_image_outputs(
         yield ImageOutput(kind="message", model=request.model, index=index, total=total, text=message)
         return
 
-    image_urls = backend.resolve_conversation_image_urls(conversation_id, file_ids, sediment_ids)
+    image_urls: list[str] = []
+    resolver = getattr(backend, "iter_conversation_image_resolution", None) if request.stream_progress else None
+    if callable(resolver):
+        for resolve_event in resolver(conversation_id, file_ids, sediment_ids, progress_text=message):
+            event_type = str(resolve_event.get("type") or "")
+            if event_type == "image.resolve.done":
+                image_urls = [str(item) for item in resolve_event.get("urls") or []]
+                break
+            yield ImageOutput(
+                kind="progress",
+                model=request.model,
+                index=index,
+                total=total,
+                text=str(resolve_event.get("progress_text") or ""),
+                upstream_event_type=event_type,
+            )
+    else:
+        image_urls = backend.resolve_conversation_image_urls(conversation_id, file_ids, sediment_ids)
     if image_urls:
         image_items = [
             {"b64_json": base64.b64encode(image_data).decode("ascii")}

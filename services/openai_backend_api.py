@@ -598,13 +598,49 @@ class OpenAIBackendAPI:
         ensure_ok(response, path)
         return response
 
-    def _get_conversation(self, conversation_id: str) -> Dict[str, Any]:
+    def _get_conversation(self, conversation_id: str, timeout: float = 60) -> Dict[str, Any]:
         """获取完整 conversation 详情。"""
         path = f"/backend-api/conversation/{conversation_id}"
         response = self.session.get(self.base_url + path, headers=self._headers(path, {"Accept": "application/json"}),
-                                    timeout=60)
+                                    timeout=timeout)
         ensure_ok(response, path)
         return response.json()
+
+    @staticmethod
+    def _extract_message_text(message: Dict[str, Any]) -> str:
+        content = message.get("content") or {}
+        parts = content.get("parts") or []
+        if not isinstance(parts, list):
+            return ""
+        text_parts: list[str] = []
+        for part in parts:
+            if isinstance(part, str):
+                text_parts.append(part)
+                continue
+            if not isinstance(part, dict):
+                continue
+            for key in ("text", "caption", "alt_text"):
+                text = str(part.get(key) or "")
+                if text:
+                    text_parts.append(text)
+                    break
+        return "".join(text_parts).strip()
+
+    def _extract_image_progress_text(self, data: Dict[str, Any]) -> str:
+        """从完整 conversation 里提取最新 assistant 进度文本。"""
+        mapping = data.get("mapping") or {}
+        records: list[tuple[float, str]] = []
+        for node in mapping.values():
+            message = (node or {}).get("message") or {}
+            author = message.get("author") or {}
+            if author.get("role") != "assistant":
+                continue
+            text = self._extract_message_text(message)
+            if text:
+                records.append((float(message.get("create_time") or 0), text))
+        if not records:
+            return ""
+        return sorted(records, key=lambda item: item[0])[-1][1]
 
     def _extract_image_tool_records(self, data: Dict[str, Any]) -> list[Dict[str, Any]]:
         """从 conversation 明细里提取图片工具输出记录。"""
@@ -669,6 +705,81 @@ class OpenAIBackendAPI:
             time.sleep(4)
         logger.info({"event": "image_poll_timeout", "conversation_id": conversation_id, "timeout_secs": timeout_secs})
         return [], []
+
+    def _poll_image_results_stream(
+            self,
+            conversation_id: str,
+            timeout_secs: float = 120.0,
+            progress_text: str = "",
+    ) -> Iterator[Dict[str, Any]]:
+        """轮询 conversation，并在每次等待/进度变化时产出流式保活事件。"""
+        start = time.time()
+        attempt = 0
+        last_progress_text = str(progress_text or "").strip()
+        last_error = ""
+        logger.info({"event": "image_poll_stream_start", "conversation_id": conversation_id,
+                     "timeout_secs": timeout_secs})
+        while time.time() - start < timeout_secs:
+            attempt += 1
+            elapsed_secs = round(time.time() - start, 1)
+            yield {
+                "type": "image.poll.wait",
+                "conversation_id": conversation_id,
+                "attempt": attempt,
+                "elapsed_secs": elapsed_secs,
+                "progress_text": "",
+            }
+            try:
+                conversation = self._get_conversation(conversation_id, timeout=20)
+            except Exception as exc:
+                last_error = str(exc)
+                logger.debug({"event": "image_poll_stream_check_failed", "conversation_id": conversation_id,
+                              "attempt": attempt, "error": last_error})
+                time.sleep(4)
+                continue
+
+            file_ids, sediment_ids = [], []
+            for record in self._extract_image_tool_records(conversation):
+                for file_id in record["file_ids"]:
+                    if file_id not in file_ids:
+                        file_ids.append(file_id)
+                for sediment_id in record["sediment_ids"]:
+                    if sediment_id not in sediment_ids:
+                        sediment_ids.append(sediment_id)
+
+            current_progress_text = self._extract_image_progress_text(conversation)
+            if current_progress_text and current_progress_text != last_progress_text:
+                if last_progress_text and current_progress_text.startswith(last_progress_text):
+                    delta = current_progress_text[len(last_progress_text):]
+                else:
+                    delta = current_progress_text
+                last_progress_text = current_progress_text
+                if delta:
+                    yield {
+                        "type": "image.poll.progress",
+                        "conversation_id": conversation_id,
+                        "attempt": attempt,
+                        "elapsed_secs": round(time.time() - start, 1),
+                        "progress_text": delta,
+                    }
+
+            logger.debug({"event": "image_poll_stream_check", "conversation_id": conversation_id, "attempt": attempt,
+                          "file_ids": file_ids, "sediment_ids": sediment_ids})
+            if file_ids:
+                logger.info({"event": "image_poll_stream_hit", "conversation_id": conversation_id, "file_ids": file_ids,
+                             "sediment_ids": sediment_ids})
+                yield {"type": "image.poll.result", "file_ids": file_ids, "sediment_ids": sediment_ids}
+                return
+            if sediment_ids:
+                logger.info({"event": "image_poll_stream_hit", "conversation_id": conversation_id, "file_ids": [],
+                             "sediment_ids": sediment_ids})
+                yield {"type": "image.poll.result", "file_ids": [], "sediment_ids": sediment_ids}
+                return
+            time.sleep(4)
+        logger.info({"event": "image_poll_stream_timeout", "conversation_id": conversation_id,
+                     "timeout_secs": timeout_secs, "last_error": last_error})
+        yield {"type": "image.poll.timeout", "conversation_id": conversation_id, "progress_text": "",
+               "error": last_error}
 
     def _get_file_download_url(self, file_id: str) -> str:
         """获取文件下载地址。"""
@@ -776,6 +887,38 @@ class OpenAIBackendAPI:
             file_ids.extend(item for item in polled_file_ids if item and item not in file_ids)
             sediment_ids.extend(item for item in polled_sediment_ids if item and item not in sediment_ids)
         return self._resolve_image_urls(conversation_id, file_ids, sediment_ids)
+
+    def iter_conversation_image_resolution(
+            self,
+            conversation_id: str,
+            file_ids: list[str],
+            sediment_ids: list[str],
+            poll: bool = True,
+            progress_text: str = "",
+    ) -> Iterator[Dict[str, Any]]:
+        """流式解析图片 URL，轮询期间持续产出进度/保活事件。"""
+        file_ids = [item for item in file_ids if item != "file_upload"]
+        sediment_ids = list(sediment_ids)
+        if poll and conversation_id and not file_ids and not sediment_ids:
+            logger.info({"event": "image_resolve_poll_stream_needed", "conversation_id": conversation_id})
+            for event in self._poll_image_results_stream(
+                    conversation_id,
+                    config.image_poll_timeout_secs,
+                    progress_text,
+            ):
+                if event.get("type") == "image.poll.result":
+                    polled_file_ids = [str(item) for item in event.get("file_ids") or []]
+                    polled_sediment_ids = [str(item) for item in event.get("sediment_ids") or []]
+                    file_ids.extend(item for item in polled_file_ids if item and item not in file_ids)
+                    sediment_ids.extend(item for item in polled_sediment_ids if item and item not in sediment_ids)
+                    break
+                yield event
+        yield {
+            "type": "image.resolve.done",
+            "urls": self._resolve_image_urls(conversation_id, file_ids, sediment_ids),
+            "file_ids": file_ids,
+            "sediment_ids": sediment_ids,
+        }
 
     def download_image_bytes(self, urls: list[str]) -> list[bytes]:
         images = []

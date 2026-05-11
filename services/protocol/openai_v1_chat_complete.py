@@ -141,6 +141,7 @@ def image_chat_events(body: dict[str, Any]) -> Iterator[dict[str, Any]]:
         n=n,
         response_format="b64_json",
         images=encode_images(images) or None,
+        stream_progress=True,
     ))
     yield from stream_image_chat_completion(image_outputs, model)
 
@@ -148,26 +149,22 @@ def image_chat_events(body: dict[str, Any]) -> Iterator[dict[str, Any]]:
 def stream_image_chat_completion(image_outputs: Iterable[ImageOutput], model: str) -> Iterator[dict[str, Any]]:
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
-    sent_role = False
     sent_text = ""
+    yield completion_chunk(model, {"role": "assistant", "content": ""}, None, completion_id, created)
     for output in image_outputs:
         content = ""
+        emit_keepalive = output.kind == "progress"
         if output.kind == "progress":
             content = output.text
-            sent_text += content
+            if content:
+                sent_text += content
         elif output.kind == "result":
             content = build_chat_image_markdown_content({"data": output.data})
         elif output.kind == "message":
             content = output.text[len(sent_text):] if output.text.startswith(sent_text) else output.text
-        if not content:
+        if not content and not emit_keepalive:
             continue
-        if not sent_role:
-            sent_role = True
-            yield completion_chunk(model, {"role": "assistant", "content": content}, None, completion_id, created)
-        else:
-            yield completion_chunk(model, {"content": content}, None, completion_id, created)
-    if not sent_role:
-        yield completion_chunk(model, {"role": "assistant", "content": ""}, None, completion_id, created)
+        yield completion_chunk(model, {"content": content}, None, completion_id, created)
     yield completion_chunk(model, {}, "stop", completion_id, created)
 
 
