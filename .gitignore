@@ -30,4 +30,5 @@ docker-compose-local.yml
 git_cache/
 
 # test
+tests/
 test/
