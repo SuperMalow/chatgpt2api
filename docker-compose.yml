@@ -10,7 +10,12 @@ services:
       - ./config.json:/app/config.json
     environment:
       # 存储后端配置 (可选值: json, sqlite, postgres, git)
-       - STORAGE_BACKEND=json
+      - STORAGE_BACKEND=json
+
+      # Uvicorn worker 进程数；默认 1。使用 json 存储或注册机时不建议调大。
+      - UVICORN_WORKERS=1
+      # 需要额外 uvicorn 参数时可启用，例如: --limit-concurrency 200 --timeout-keep-alive 30
+      # - UVICORN_EXTRA_ARGS=--limit-concurrency 200
       
       # 数据库配置 (当 STORAGE_BACKEND=sqlite/postgres 时使用)
       # - DATABASE_URL=postgresql://user:password@host:5432/dbname
