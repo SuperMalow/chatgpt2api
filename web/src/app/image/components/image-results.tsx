@@ -68,6 +68,17 @@ export function ImageResults({
   formatConversationTime,
 }: ImageResultsProps) {
   const [imageDimensions, setImageDimensions] = useState<Record<string, string>>({});
+  const [imageLoadFailed, setImageLoadFailed] = useState<Record<string, boolean>>({});
+  const turnAspectClass = (size: string, { mobileSquare = false }: { mobileSquare?: boolean } = {}) =>
+    cn(
+      mobileSquare && "aspect-square",
+      size === "1:1" && `${mobileSquare ? "sm:" : ""}aspect-square`,
+      size === "16:9" && `${mobileSquare ? "sm:" : ""}aspect-video`,
+      size === "9:16" && `${mobileSquare ? "sm:" : ""}aspect-[9/16]`,
+      size === "4:3" && `${mobileSquare ? "sm:" : ""}aspect-[4/3]`,
+      size === "3:4" && `${mobileSquare ? "sm:" : ""}aspect-[3/4]`,
+      !["1:1", "16:9", "9:16", "4:3", "3:4"].includes(size) && `${mobileSquare ? "sm:" : ""}aspect-square`,
+    );
 
   const updateImageDimensions = (id: string, width: number, height: number) => {
     const dimensions = formatImageDimensions(width, height);
@@ -76,6 +87,14 @@ export function ImageResults({
         return current;
       }
       return { ...current, [id]: dimensions };
+    });
+  };
+  const markImageLoadFailed = (id: string) => {
+    setImageLoadFailed((current) => {
+      if (current[id]) {
+        return current;
+      }
+      return { ...current, [id]: true };
     });
   };
 
@@ -113,7 +132,7 @@ export function ImageResults({
         }));
         const successfulTurnImages = turn.images.flatMap((image) => {
           const src = image.status === "success" ? getStoredImageSrc(image) : "";
-          return src
+          return src && !imageLoadFailed[image.id]
             ? [
                 {
                   id: image.id,
@@ -207,6 +226,39 @@ export function ImageResults({
                   <div className="grid grid-cols-3 gap-2 sm:block sm:columns-2 sm:gap-4 sm:space-y-4 xl:columns-3">
                     {turn.images.map((image, index) => {
                       const imageSrc = image.status === "success" ? getStoredImageSrc(image) : "";
+                      const showImageLoadFallback = image.status === "success" && (!!imageSrc && imageLoadFailed[image.id]);
+                      if (showImageLoadFallback) {
+                        return (
+                          <div
+                            key={image.id}
+                            className={cn(
+                              "break-inside-avoid overflow-hidden rounded-xl border border-stone-200/80 bg-stone-100/80",
+                              turnAspectClass(turn.size, { mobileSquare: true }),
+                            )}
+                          >
+                            <div className="relative h-full w-full bg-[linear-gradient(110deg,rgba(255,255,255,0.18),rgba(255,255,255,0.5),rgba(255,255,255,0.18))] bg-[length:200%_100%] animate-[shimmer_2.4s_ease-in-out_infinite]">
+                              <div className="absolute inset-0 bg-stone-100/90" />
+                              <div className="absolute inset-0 flex h-full min-h-16 flex-col items-center justify-center gap-2 px-3 py-3 text-center sm:gap-3 sm:px-6 sm:py-8">
+                                <div className="space-y-1">
+                                  <div className="mx-auto h-2 w-20 rounded-full bg-white/80 shadow-[0_1px_2px_rgba(0,0,0,0.03)] sm:h-2.5 sm:w-28" />
+                                  <div className="mx-auto h-2 w-14 rounded-full bg-white/60 sm:h-2.5 sm:w-20" />
+                                </div>
+                                <div className="max-w-[14rem] space-y-2">
+                                  <p className="text-[11px] leading-4 text-rose-600 sm:text-sm sm:leading-6">图片加载失败，请重新生成</p>
+                                  <button
+                                    type="button"
+                                    onClick={() => void onRetryImage(selectedConversation.id, turn.id, image.id)}
+                                    className="cursor-pointer rounded-full bg-white/95 px-2.5 py-1 text-[10px] font-medium text-rose-600 shadow-sm ring-1 ring-black/5 transition hover:bg-white sm:px-3 sm:text-xs"
+                                  >
+                                    重新生成这一张
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      }
+
                       if (image.status === "success" && imageSrc) {
                         const currentIndex = successfulTurnImages.findIndex((item) => item.id === image.id);
                         const sizeLabel = image.b64_json ? formatBase64ImageSize(image.b64_json) : "";
@@ -233,6 +285,9 @@ export function ImageResults({
                                     event.currentTarget.naturalWidth,
                                     event.currentTarget.naturalHeight,
                                   );
+                                }}
+                                onError={() => {
+                                  markImageLoadFailed(image.id);
                                 }}
                               />
                             </button>
@@ -273,25 +328,30 @@ export function ImageResults({
                           <div
                             key={image.id}
                             className={cn(
-                              "break-inside-avoid overflow-hidden rounded-xl border border-rose-200 bg-rose-50 sm:rounded-none",
-                              "aspect-square",
-                              turn.size === "1:1" && "sm:aspect-square",
-                              turn.size === "16:9" && "sm:aspect-video",
-                              turn.size === "9:16" && "sm:aspect-[9/16]",
-                              turn.size === "4:3" && "sm:aspect-[4/3]",
-                              turn.size === "3:4" && "sm:aspect-[3/4]",
-                              !["1:1", "16:9", "9:16", "4:3", "3:4"].includes(turn.size) && "sm:aspect-square",
+                              "break-inside-avoid overflow-hidden rounded-xl border border-stone-200/80 bg-stone-100/80",
+                              turnAspectClass(turn.size, { mobileSquare: true }),
                             )}
                           >
-                            <div className="flex h-full min-h-16 flex-col items-center justify-center gap-1.5 px-2 py-2 text-center text-[11px] leading-4 text-rose-600 sm:gap-3 sm:px-6 sm:py-8 sm:text-sm sm:leading-6">
-                              <span className="line-clamp-2 sm:line-clamp-none">{image.error || "生成失败"}</span>
-                              <button
-                                type="button"
-                                onClick={() => void onRetryImage(selectedConversation.id, turn.id, image.id)}
-                                className="rounded-full bg-white px-2 py-1 text-[10px] font-medium text-rose-600 shadow-sm transition hover:bg-rose-100 sm:px-3 sm:text-xs"
-                              >
-                                重新生成这一张
-                              </button>
+                            <div className="relative h-full w-full bg-[linear-gradient(110deg,rgba(255,255,255,0.18),rgba(255,255,255,0.5),rgba(255,255,255,0.18))] bg-[length:200%_100%] animate-[shimmer_2.4s_ease-in-out_infinite]">
+                              <div className="absolute inset-0 bg-stone-100/90" />
+                              <div className="absolute inset-0 flex h-full min-h-16 flex-col items-center justify-center gap-2 px-3 py-3 text-center sm:gap-3 sm:px-6 sm:py-8">
+                                <div className="space-y-1">
+                                  <div className="mx-auto h-2 w-20 rounded-full bg-white/80 shadow-[0_1px_2px_rgba(0,0,0,0.03)] sm:h-2.5 sm:w-28" />
+                                  <div className="mx-auto h-2 w-14 rounded-full bg-white/60 sm:h-2.5 sm:w-20" />
+                                </div>
+                                <div className="max-w-[14rem] space-y-2">
+                                  <p className="text-[11px] leading-4 text-rose-600 sm:text-sm sm:leading-6">
+                                    {image.error || "生成失败"}
+                                  </p>
+                                  <button
+                                    type="button"
+                                    onClick={() => void onRetryImage(selectedConversation.id, turn.id, image.id)}
+                                    className="cursor-pointer rounded-full bg-white/95 px-2.5 py-1 text-[10px] font-medium text-rose-600 shadow-sm ring-1 ring-black/5 transition hover:bg-white sm:px-3 sm:text-xs"
+                                  >
+                                    重新生成这一张
+                                  </button>
+                                </div>
+                              </div>
                             </div>
                           </div>
                         );
@@ -301,24 +361,26 @@ export function ImageResults({
                         <div
                           key={image.id}
                           className={cn(
-                            "break-inside-avoid overflow-hidden rounded-xl border border-stone-200/80 bg-stone-100/80 sm:rounded-none",
-                            turn.size === "1:1" && "aspect-square",
-                            turn.size === "16:9" && "aspect-video",
-                            turn.size === "9:16" && "aspect-[9/16]",
-                            turn.size === "4:3" && "aspect-[4/3]",
-                            turn.size === "3:4" && "aspect-[3/4]",
-                            !["1:1", "16:9", "9:16", "4:3", "3:4"].includes(turn.size) && "aspect-square",
+                            "break-inside-avoid overflow-hidden rounded-xl border border-stone-200/80 bg-stone-100/80",
+                            turnAspectClass(turn.size),
                           )}
                         >
-                          <div className="flex h-full flex-col items-center justify-center gap-1.5 px-2 py-3 text-center text-stone-500 sm:gap-3 sm:px-6 sm:py-8">
-                            <div className="rounded-full bg-white p-2 shadow-sm sm:p-3">
-                              {turn.status === "queued" ? (
-                                <Clock3 className="size-4 sm:size-5" />
-                              ) : (
-                                <LoaderCircle className="size-4 animate-spin sm:size-5" />
-                              )}
+                          <div className="relative h-full w-full bg-[linear-gradient(110deg,rgba(255,255,255,0.16),rgba(255,255,255,0.5),rgba(255,255,255,0.16))] bg-[length:200%_100%] animate-[shimmer_2.2s_ease-in-out_infinite]">
+                            <div className="absolute inset-0 bg-stone-100/88" />
+                            <div className="absolute inset-0 flex h-full flex-col items-center justify-center gap-3 px-3 py-4 text-center text-stone-500 sm:gap-4 sm:px-6 sm:py-8">
+                              <div className="space-y-2">
+                                <div className="mx-auto h-3 w-24 rounded-full bg-white/85 sm:w-32" />
+                                <div className="mx-auto h-3 w-16 rounded-full bg-white/65 sm:w-20" />
+                              </div>
+                              <div className="rounded-full bg-white/90 p-2 shadow-sm ring-1 ring-black/5 sm:p-3">
+                                {turn.status === "queued" ? (
+                                  <Clock3 className="size-4 sm:size-5" />
+                                ) : (
+                                  <LoaderCircle className="size-4 animate-spin sm:size-5" />
+                                )}
+                              </div>
+                              <p className="text-[10px] leading-4 sm:text-sm">{turn.status === "queued" ? "排队中" : "处理中"}</p>
                             </div>
-                            <p className="text-[10px] leading-4 sm:text-sm">{turn.status === "queued" ? "排队中" : "处理中"}</p>
                           </div>
                         </div>
                       );
