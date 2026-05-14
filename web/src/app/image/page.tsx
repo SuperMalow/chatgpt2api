@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { History, LoaderCircle, Plus, Trash2 } from "lucide-react";
+import { ArrowDown, History, LoaderCircle, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { ImageComposer } from "@/app/image/components/image-composer";
@@ -45,9 +45,12 @@ import {
 const ACTIVE_CONVERSATION_STORAGE_KEY = "chatgpt2api:image_active_conversation_id";
 const IMAGE_SIZE_STORAGE_KEY = "chatgpt2api:image_last_size";
 const IMAGE_COUNT_STORAGE_KEY = "chatgpt2api:image_last_count";
+export const IMAGE_COUNT_MAX = 9;
+export const DEFAULT_IMAGE_COUNT = "2";
+export const DEFAULT_IMAGE_SIZE = "16:9";
 
 function clampImageCount(value: string) {
-  return String(Math.min(100, Math.max(1, Math.floor(Number(value) || 1))));
+  return String(Math.min(IMAGE_COUNT_MAX, Math.max(1, Math.floor(Number(value) || 1))));
 }
 const activeConversationQueueIds = new Set<string>();
 
@@ -341,18 +344,20 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
   const didLoadQuotaRef = useRef(false);
   const conversationsRef = useRef<ImageConversation[]>([]);
   const resultsViewportRef = useRef<HTMLDivElement>(null);
+  const shouldAutoScrollToBottomRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [imagePrompt, setImagePrompt] = useState("");
-  const [imageCount, setImageCount] = useState("1");
-  const [imageSize, setImageSize] = useState("");
+  const [imageCount, setImageCount] = useState(DEFAULT_IMAGE_COUNT);
+  const [imageSize, setImageSize] = useState(DEFAULT_IMAGE_SIZE);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [referenceImageFiles, setReferenceImageFiles] = useState<File[]>([]);
   const [referenceImages, setReferenceImages] = useState<StoredReferenceImage[]>([]);
   const [conversations, setConversations] = useState<ImageConversation[]>([]);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
+  const [showScrollToBottomButton, setShowScrollToBottomButton] = useState(false);
   const [availableQuota, setAvailableQuota] = useState("加载中...");
   const [lightboxImages, setLightboxImages] = useState<ImageLightboxItem[]>([]);
   const [lightboxOpen, setLightboxOpen] = useState(false);
@@ -410,8 +415,8 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
       try {
         const storedSize = typeof window !== "undefined" ? window.localStorage.getItem(IMAGE_SIZE_STORAGE_KEY) : null;
         const storedCount = typeof window !== "undefined" ? window.localStorage.getItem(IMAGE_COUNT_STORAGE_KEY) : null;
-        setImageSize(storedSize || "");
-        setImageCount(storedCount ? clampImageCount(storedCount) : "1");
+        setImageSize(storedSize || DEFAULT_IMAGE_SIZE);
+        setImageCount(storedCount ? clampImageCount(storedCount) : DEFAULT_IMAGE_COUNT);
 
         const items = await listImageConversations();
         const normalizedItems = await recoverConversationHistory(items);
@@ -474,16 +479,61 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     };
   }, [isAdmin, loadQuota]);
 
-  useEffect(() => {
-    if (!selectedConversation) {
+  const updateScrollToBottomButtonVisibility = useCallback(() => {
+    const viewport = resultsViewportRef.current;
+    if (!viewport) {
+      setShowScrollToBottomButton(false);
       return;
     }
 
-    resultsViewportRef.current?.scrollTo({
-      top: resultsViewportRef.current.scrollHeight,
-      behavior: "smooth",
+    const distanceFromBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
+    setShowScrollToBottomButton(distanceFromBottom > 80);
+  }, []);
+
+  const scrollResultsToBottom = useCallback(
+    (behavior: ScrollBehavior = "smooth") => {
+      const viewport = resultsViewportRef.current;
+      if (!viewport) {
+        return;
+      }
+
+      viewport.scrollTo({
+        top: viewport.scrollHeight,
+        behavior,
+      });
+      setShowScrollToBottomButton(false);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!selectedConversation) {
+      setShowScrollToBottomButton(false);
+      return;
+    }
+
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const frameId = window.requestAnimationFrame(() => {
+      if (shouldAutoScrollToBottomRef.current) {
+        shouldAutoScrollToBottomRef.current = false;
+        scrollResultsToBottom();
+        return;
+      }
+
+      updateScrollToBottomButtonVisibility();
     });
-  }, [selectedConversation?.updatedAt, selectedConversation?.turns.length, selectedConversation]);
+
+    return () => window.cancelAnimationFrame(frameId);
+  }, [
+    scrollResultsToBottom,
+    selectedConversation?.updatedAt,
+    selectedConversation?.turns.length,
+    selectedConversation,
+    updateScrollToBottomButtonVisibility,
+  ]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -778,8 +828,8 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
 
     setSelectedConversationId(conversationId);
     setImagePrompt(turn.prompt);
-    setImageCount(String(Math.max(1, turn.count || turn.images.length || 1)));
-    setImageSize(turn.size);
+    setImageCount(clampImageCount(String(Math.max(1, turn.count || turn.images.length || 1))));
+    setImageSize(turn.size || DEFAULT_IMAGE_SIZE);
     setReferenceImages(turn.referenceImages);
     setReferenceImageFiles(
       turn.referenceImages.map((image) => dataUrlToFile(image.dataUrl, image.name, image.type)),
@@ -982,7 +1032,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
 
       const now = new Date().toISOString();
       const nextTurnId = createId();
-      const count = Math.max(1, sourceTurn.count || sourceTurn.images.length || 1);
+      const count = Number(clampImageCount(String(Math.max(1, sourceTurn.count || sourceTurn.images.length || 1))));
       const nextTurn: ImageTurn = {
         id: nextTurnId,
         prompt: sourceTurn.prompt,
@@ -1114,6 +1164,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
 
     setSelectedConversationId(conversationId);
     clearComposerInputs();
+    shouldAutoScrollToBottomRef.current = true;
 
     await persistConversation(baseConversation);
     void runConversationQueue(conversationId);
@@ -1203,21 +1254,35 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
             </Button>
           </div>
 
-          <div
-            ref={resultsViewportRef}
-            className="hide-scrollbar min-h-0 flex-1 overscroll-contain overflow-y-auto px-1 py-2 sm:px-4 sm:py-4"
-          >
-            <ImageResults
-              selectedConversation={selectedConversation}
-              onOpenLightbox={openLightbox}
-              onContinueEdit={handleContinueEdit}
-              onDeletePrompt={openDeletePromptConfirm}
-              onDeleteResults={openDeleteResultsConfirm}
-              onReuseTurnConfig={handleReuseTurnConfig}
-              onRegenerateTurn={handleRegenerateTurn}
-              onRetryImage={handleRetryImage}
-              formatConversationTime={formatConversationTime}
-            />
+          <div className="relative min-h-0 flex-1">
+            <div
+              ref={resultsViewportRef}
+              onScroll={updateScrollToBottomButtonVisibility}
+              className="hide-scrollbar h-full min-h-0 overscroll-contain overflow-y-auto px-1 py-2 sm:px-4 sm:py-4"
+            >
+              <ImageResults
+                selectedConversation={selectedConversation}
+                onOpenLightbox={openLightbox}
+                onContinueEdit={handleContinueEdit}
+                onDeletePrompt={openDeletePromptConfirm}
+                onDeleteResults={openDeleteResultsConfirm}
+                onReuseTurnConfig={handleReuseTurnConfig}
+                onRegenerateTurn={handleRegenerateTurn}
+                onRetryImage={handleRetryImage}
+                formatConversationTime={formatConversationTime}
+              />
+            </div>
+            {showScrollToBottomButton ? (
+              <Button
+                type="button"
+                size="icon"
+                className="absolute right-3 bottom-3 z-10 size-9 rounded-full border border-white/70 bg-white/78 text-stone-700 shadow-[0_18px_40px_-22px_rgba(15,23,42,0.4)] backdrop-blur-sm hover:bg-white/92 sm:right-6 sm:bottom-6"
+                onClick={() => scrollResultsToBottom()}
+                aria-label="滚动到最新内容"
+              >
+                <ArrowDown className="size-3.5" />
+              </Button>
+            ) : null}
           </div>
 
           <ImageComposer

@@ -2,6 +2,7 @@
 import { ArrowUp, Check, ChevronDown, ImagePlus, LoaderCircle, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type RefObject } from "react";
 
+import { DEFAULT_IMAGE_SIZE, IMAGE_COUNT_MAX } from "@/app/image/page";
 import { ImageLightbox } from "@/components/image-lightbox";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -54,14 +55,13 @@ export function ImageComposer({
     [referenceImages],
   );
   const imageSizeOptions = [
-    { value: "", label: "未指定" },
     { value: "1:1", label: "1:1 (正方形)" },
     { value: "16:9", label: "16:9 (横版)" },
     { value: "4:3", label: "4:3 (横版)" },
     { value: "3:4", label: "3:4 (竖版)" },
     { value: "9:16", label: "9:16 (竖版)" },
   ];
-  const imageSizeLabel = imageSizeOptions.find((option) => option.value === imageSize)?.label || "未指定";
+  const imageSizeLabel = imageSizeOptions.find((option) => option.value === imageSize)?.label || "16:9 (横版)";
 
   useEffect(() => {
     if (!isSizeMenuOpen) {
@@ -198,7 +198,7 @@ export function ImageComposer({
                       type="number"
                       inputMode="numeric"
                       min="1"
-                      max="100"
+                      max={String(IMAGE_COUNT_MAX)}
                       step="1"
                       value={imageCount}
                       onChange={(event) => onImageCountChange(event.target.value)}
@@ -247,7 +247,7 @@ export function ImageComposer({
                                 active && "bg-stone-100 font-medium text-stone-950",
                               )}
                               onClick={() => {
-                                onImageSizeChange(option.value);
+                                onImageSizeChange(option.value || DEFAULT_IMAGE_SIZE);
                                 setIsSizeMenuOpen(false);
                               }}
                             >
@@ -279,4 +279,3 @@ export function ImageComposer({
     </div>
   );
 }
-
