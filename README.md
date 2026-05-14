@@ -52,9 +52,9 @@ uv run main.py
 启动前端：
 
 ```bash
-cd chatgpt2api/web
-bun install
-bun run dev
+cd chatgpt2api/web-vue
+npm install
+npm run dev
 ```
 
 ### 存储后端配置

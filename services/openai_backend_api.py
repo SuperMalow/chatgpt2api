@@ -68,6 +68,7 @@ class OpenAIBackendAPI:
         self.session_id = self.fp["oai-session-id"]
         self.pow_script_sources: list[str] = []
         self.pow_data_build = ""
+        self.last_image_resolution_errors: list[str] = []
         self.session = requests.Session(**proxy_settings.build_session_kwargs(
             impersonate=self.fp["impersonate"],
             verify=True,
@@ -822,10 +823,12 @@ class OpenAIBackendAPI:
                     "id": file_id,
                     "error": repr(exc),
                 })
+                self.last_image_resolution_errors.append(f"file {file_id} download url failed: {exc!r}")
                 continue
             if url:
                 urls.append(url)
             else:
+                self.last_image_resolution_errors.append(f"file {file_id} download url was empty")
                 logger.debug({
                     "event": "image_download_url_empty",
                     "source": "file",
@@ -852,10 +855,12 @@ class OpenAIBackendAPI:
                     "id": sediment_id,
                     "error": repr(exc),
                 })
+                self.last_image_resolution_errors.append(f"sediment {sediment_id} download url failed: {exc!r}")
                 continue
             if url:
                 urls.append(url)
             else:
+                self.last_image_resolution_errors.append(f"sediment {sediment_id} download url was empty")
                 logger.debug({
                     "event": "image_download_url_empty",
                     "source": "sediment",
@@ -878,6 +883,7 @@ class OpenAIBackendAPI:
             sediment_ids: list[str],
             poll: bool = True,
     ) -> list[str]:
+        self.last_image_resolution_errors = []
         file_ids = [item for item in file_ids if item != "file_upload"]
         sediment_ids = list(sediment_ids)
         if poll and conversation_id and not file_ids and not sediment_ids:
@@ -886,6 +892,10 @@ class OpenAIBackendAPI:
                                                                             config.image_poll_timeout_secs)
             file_ids.extend(item for item in polled_file_ids if item and item not in file_ids)
             sediment_ids.extend(item for item in polled_sediment_ids if item and item not in sediment_ids)
+            if not file_ids and not sediment_ids:
+                self.last_image_resolution_errors.append(
+                    f"image polling timed out after {config.image_poll_timeout_secs}s without file ids or sediment ids"
+                )
         return self._resolve_image_urls(conversation_id, file_ids, sediment_ids)
 
     def iter_conversation_image_resolution(
@@ -897,6 +907,7 @@ class OpenAIBackendAPI:
             progress_text: str = "",
     ) -> Iterator[Dict[str, Any]]:
         """流式解析图片 URL，轮询期间持续产出进度/保活事件。"""
+        self.last_image_resolution_errors = []
         file_ids = [item for item in file_ids if item != "file_upload"]
         sediment_ids = list(sediment_ids)
         if poll and conversation_id and not file_ids and not sediment_ids:
@@ -912,12 +923,17 @@ class OpenAIBackendAPI:
                     file_ids.extend(item for item in polled_file_ids if item and item not in file_ids)
                     sediment_ids.extend(item for item in polled_sediment_ids if item and item not in sediment_ids)
                     break
+                if event.get("type") == "image.poll.timeout":
+                    self.last_image_resolution_errors.append(
+                        f"image polling timed out after {config.image_poll_timeout_secs}s without file ids or sediment ids"
+                    )
                 yield event
         yield {
             "type": "image.resolve.done",
             "urls": self._resolve_image_urls(conversation_id, file_ids, sediment_ids),
             "file_ids": file_ids,
             "sediment_ids": sediment_ids,
+            "errors": list(self.last_image_resolution_errors),
         }
 
     def download_image_bytes(self, urls: list[str]) -> list[bytes]:

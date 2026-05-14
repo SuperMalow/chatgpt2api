@@ -26,12 +26,14 @@ class ImageGenerationError(Exception):
         error_type: str = "server_error",
         code: str | None = "upstream_error",
         param: str | None = None,
+        detail: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.error_type = error_type
         self.code = code
         self.param = param
+        self.detail = detail or {}
 
     def to_openai_error(self) -> dict[str, Any]:
         return {
@@ -60,6 +62,59 @@ def image_stream_error_message(message: str) -> str:
     if "curl: (35)" in lower or "tls connect error" in lower or "openssl_internal" in lower:
         return "upstream image connection failed, please retry later"
     return text or "image generation failed"
+
+
+def _short_text(value: object, limit: int = 500) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _image_no_data_detail(
+    *,
+    conversation_id: str,
+    file_ids: list[str],
+    sediment_ids: list[str],
+    message: str,
+    last_event_type: str,
+    tool_invoked: object,
+    turn_use_case: str,
+    resolution_errors: list[str],
+) -> dict[str, Any]:
+    return {
+        "reason": "image_generation_finished_without_image_data",
+        "conversation_id": conversation_id,
+        "file_ids": file_ids,
+        "sediment_ids": sediment_ids,
+        "last_event": last_event_type,
+        "tool_invoked": tool_invoked,
+        "turn_use_case": turn_use_case,
+        "message": _short_text(message),
+        "resolution_errors": [_short_text(item, 800) for item in resolution_errors],
+    }
+
+
+def _image_no_data_message(detail: dict[str, Any]) -> str:
+    parts = ["image generation finished without image data"]
+    if detail.get("conversation_id"):
+        parts.append(f"conversation_id={detail['conversation_id']}")
+    if detail.get("file_ids"):
+        parts.append(f"file_ids={detail['file_ids']}")
+    if detail.get("sediment_ids"):
+        parts.append(f"sediment_ids={detail['sediment_ids']}")
+    if detail.get("last_event"):
+        parts.append(f"last_event={detail['last_event']}")
+    if detail.get("tool_invoked") is not None:
+        parts.append(f"tool_invoked={detail['tool_invoked']}")
+    if detail.get("turn_use_case"):
+        parts.append(f"turn_use_case={detail['turn_use_case']}")
+    if detail.get("message"):
+        parts.append(f"message={detail['message']}")
+    resolution_errors = detail.get("resolution_errors")
+    if isinstance(resolution_errors, list) and resolution_errors:
+        parts.append(f"resolution_errors={'; '.join(str(item) for item in resolution_errors)}")
+    return "; ".join(parts)
 
 
 def encode_images(images: Iterable[tuple[bytes, str, str]]) -> list[str]:
@@ -553,6 +608,8 @@ def stream_image_outputs(
     file_ids = [str(item) for item in last.get("file_ids") or []]
     sediment_ids = [str(item) for item in last.get("sediment_ids") or []]
     message = str(last.get("text") or "").strip()
+    raw = last.get("raw")
+    last_event_type = str(raw.get("type") or "") if isinstance(raw, dict) else str(last.get("type") or "")
     is_text_response = last.get("tool_invoked") is False or last.get("turn_use_case") == "text"
     logger.info({
         "event": "image_stream_resolve_start",
@@ -567,13 +624,17 @@ def stream_image_outputs(
         return
 
     image_urls: list[str] = []
+    resolution_errors: list[str] = []
     resolver = getattr(backend, "iter_conversation_image_resolution", None) if request.stream_progress else None
     if callable(resolver):
         for resolve_event in resolver(conversation_id, file_ids, sediment_ids, progress_text=message):
             event_type = str(resolve_event.get("type") or "")
             if event_type == "image.resolve.done":
                 image_urls = [str(item) for item in resolve_event.get("urls") or []]
+                resolution_errors = [str(item) for item in resolve_event.get("errors") or []]
                 break
+            if resolve_event.get("error"):
+                resolution_errors.append(str(resolve_event.get("error")))
             yield ImageOutput(
                 kind="progress",
                 model=request.model,
@@ -584,6 +645,7 @@ def stream_image_outputs(
             )
     else:
         image_urls = backend.resolve_conversation_image_urls(conversation_id, file_ids, sediment_ids)
+        resolution_errors = [str(item) for item in getattr(backend, "last_image_resolution_errors", [])]
     if image_urls:
         image_items = [
             {"b64_json": base64.b64encode(image_data).decode("ascii")}
@@ -600,8 +662,21 @@ def stream_image_outputs(
             yield ImageOutput(kind="result", model=request.model, index=index, total=total, data=data)
         return
 
-    if message:
+    if message and not file_ids and not sediment_ids and not resolution_errors:
         yield ImageOutput(kind="message", model=request.model, index=index, total=total, text=message)
+        return
+
+    detail = _image_no_data_detail(
+        conversation_id=conversation_id,
+        file_ids=file_ids,
+        sediment_ids=sediment_ids,
+        message=message,
+        last_event_type=last_event_type,
+        tool_invoked=last.get("tool_invoked"),
+        turn_use_case=str(last.get("turn_use_case") or ""),
+        resolution_errors=resolution_errors,
+    )
+    raise ImageGenerationError(_image_no_data_message(detail), detail=detail)
 
 
 def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[ImageOutput]:

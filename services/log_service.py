@@ -166,6 +166,18 @@ def _image_error_response(exc: Exception) -> JSONResponse:
     )
 
 
+def _http_exception_message(exc: HTTPException) -> str:
+    detail = exc.detail
+    if isinstance(detail, dict) and isinstance(detail.get("error"), str):
+        return detail["error"]
+    return str(detail)
+
+
+def _http_exception_detail(exc: HTTPException) -> dict[str, Any] | None:
+    detail = exc.detail
+    return detail if isinstance(detail, dict) else None
+
+
 def _next_item(items):
     try:
         return True, next(items)
@@ -188,10 +200,10 @@ class LoggedCall:
         try:
             result = await run_in_threadpool(handler, *args)
         except ImageGenerationError as exc:
-            self.log("调用失败", status="failed", error=str(exc))
+            self.log("调用失败", status="failed", error=str(exc), error_detail=exc.detail)
             return _image_error_response(exc)
         except HTTPException as exc:
-            self.log("调用失败", status="failed", error=str(exc.detail))
+            self.log("调用失败", status="failed", error=_http_exception_message(exc), error_detail=_http_exception_detail(exc))
             raise
         except Exception as exc:
             self.log("调用失败", status="failed", error=str(exc))
@@ -205,10 +217,10 @@ class LoggedCall:
         try:
             has_first, first = await run_in_threadpool(_next_item, result)
         except ImageGenerationError as exc:
-            self.log("调用失败", status="failed", error=str(exc))
+            self.log("调用失败", status="failed", error=str(exc), error_detail=exc.detail)
             return _image_error_response(exc)
         except HTTPException as exc:
-            self.log("调用失败", status="failed", error=str(exc.detail))
+            self.log("调用失败", status="failed", error=_http_exception_message(exc), error_detail=_http_exception_detail(exc))
             raise
         except Exception as exc:
             self.log("调用失败", status="failed", error=str(exc))
@@ -227,14 +239,21 @@ class LoggedCall:
                 yield item
         except Exception as exc:
             failed = True
-            self.log("流式调用失败", status="failed", error=str(exc), urls=urls)
+            error_detail = getattr(exc, "detail", None)
+            self.log(
+                "流式调用失败",
+                status="failed",
+                error=str(exc),
+                error_detail=error_detail if isinstance(error_detail, dict) else None,
+                urls=urls,
+            )
             raise
         finally:
             if not failed:
                 self.log("流式调用结束", urls=urls)
 
     def log(self, suffix: str, result: object = None, status: str = "success", error: str = "",
-            urls: list[str] | None = None) -> None:
+            urls: list[str] | None = None, error_detail: dict[str, Any] | None = None) -> None:
         detail = {
             "key_id": self.identity.get("id"),
             "key_name": self.identity.get("name"),
@@ -251,6 +270,8 @@ class LoggedCall:
             detail["request_text"] = request_excerpt
         if error:
             detail["error"] = error
+        if error_detail:
+            detail["error_detail"] = error_detail
         collected_urls = [*(urls or []), *_collect_urls(result)]
         if collected_urls:
             detail["urls"] = list(dict.fromkeys(collected_urls))

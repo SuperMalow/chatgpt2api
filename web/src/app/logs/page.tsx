@@ -29,7 +29,7 @@ const typeLabels: Record<string, string> = {
 
 function getDetailText(item: SystemLog, key: string) {
   const value = item.detail?.[key];
-  return typeof value === "string" || typeof value === "number" ? String(value) : "-";
+  return typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? String(value) : "-";
 }
 
 function formatDuration(item: SystemLog) {
@@ -49,6 +49,14 @@ function getStatus(item: SystemLog) {
   return "-";
 }
 
+function isStructuredDetailValue(value: unknown) {
+  return Boolean(value) && typeof value === "object";
+}
+
+function formatStructuredDetail(value: unknown) {
+  return JSON.stringify(value, null, 2);
+}
+
 function LogsContent() {
   const [items, setItems] = useState<SystemLog[]>([]);
   const [type, setType] = useState<string>(LogType.Call);
@@ -65,6 +73,9 @@ function LogsContent() {
   const [deletingItems, setDeletingItems] = useState<SystemLog[]>([]);
   const detailUrls = getUrls(detailLog);
   const detailImages = detailUrls.map((url, index) => ({ id: `${index}`, src: url }));
+  const detailEntries = Object.entries(detailLog?.detail || {});
+  const scalarDetailEntries = detailEntries.filter(([, value]) => !isStructuredDetailValue(value));
+  const structuredDetailEntries = detailEntries.filter(([key, value]) => key !== "urls" && isStructuredDetailValue(value));
   const isCallLog = type === LogType.Call;
   const pageSize = 10;
   const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
@@ -284,8 +295,8 @@ function LogsContent() {
           <div className="flex-1 overflow-y-auto px-6 py-5">
             <div className="space-y-4">
               <div className="grid gap-3 rounded-xl border border-stone-200 bg-white p-4 text-sm text-stone-600 md:grid-cols-2">
-                {Object.entries(detailLog?.detail || {})
-                  .filter(([key, value]) => key !== "urls" && typeof value !== "object")
+                {scalarDetailEntries
+                  .filter(([key]) => key !== "urls")
                   .map(([key, value]) => (
                     <div key={key} className="flex items-start justify-between gap-4">
                       <span className="text-stone-400">{key}</span>
@@ -293,6 +304,19 @@ function LogsContent() {
                     </div>
                   ))}
               </div>
+              {structuredDetailEntries.length ? (
+                <div className="space-y-3 rounded-xl border border-stone-200 bg-white p-4">
+                  <div className="text-xs font-semibold tracking-[0.14em] text-stone-400 uppercase">结构化信息</div>
+                  {structuredDetailEntries.map(([key, value]) => (
+                    <div key={key} className="space-y-2">
+                      <div className="text-sm font-medium text-stone-700">{key}</div>
+                      <pre className="max-h-80 overflow-auto rounded-lg border border-stone-200 bg-stone-50 p-3 text-xs leading-5 break-words whitespace-pre-wrap text-stone-700">
+                        {formatStructuredDetail(value)}
+                      </pre>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
               {detailUrls.length ? (
                 <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3">
                   {detailUrls.map((url, index) => (

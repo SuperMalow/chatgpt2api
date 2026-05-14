@@ -75,6 +75,8 @@ def _public_task(task: dict[str, Any]) -> dict[str, Any]:
         item["data"] = task.get("data")
     if task.get("error"):
         item["error"] = task.get("error")
+    if task.get("error_detail"):
+        item["error_detail"] = task.get("error_detail")
     return item
 
 
@@ -244,7 +246,10 @@ class ImageTaskService:
             )
         except Exception as exc:
             error_message = str(exc) or "image task failed"
-            self._update_task(key, status=TASK_STATUS_ERROR, error=error_message, data=[])
+            error_detail = getattr(exc, "detail", None)
+            if not isinstance(error_detail, dict):
+                error_detail = None
+            self._update_task(key, status=TASK_STATUS_ERROR, error=error_message, error_detail=error_detail, data=[])
             self._log_call(
                 identity,
                 mode,
@@ -254,6 +259,7 @@ class ImageTaskService:
                 request_preview=request_text(payload.get("prompt")),
                 status="failed",
                 error=error_message,
+                error_detail=error_detail,
             )
 
     def _log_call(
@@ -267,6 +273,7 @@ class ImageTaskService:
         request_preview: str = "",
         status: str = "success",
         error: str = "",
+        error_detail: dict[str, Any] | None = None,
         urls: list[str] | None = None,
     ) -> None:
         endpoint = "/v1/images/edits" if mode == "edit" else "/v1/images/generations"
@@ -286,6 +293,8 @@ class ImageTaskService:
             detail["request_text"] = request_preview
         if error:
             detail["error"] = error
+        if error_detail:
+            detail["error_detail"] = error_detail
         if urls:
             detail["urls"] = list(dict.fromkeys(urls))
         try:
@@ -339,6 +348,9 @@ class ImageTaskService:
             error = _clean(item.get("error"))
             if error:
                 task["error"] = error
+            error_detail = item.get("error_detail")
+            if isinstance(error_detail, dict):
+                task["error_detail"] = error_detail
             tasks[_task_key(owner, task_id)] = task
         return tasks
 
