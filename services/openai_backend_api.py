@@ -808,7 +808,7 @@ class OpenAIBackendAPI:
                 "progress_text": "",
             }
             try:
-                conversation = self._get_conversation(conversation_id, timeout=20)
+                conversation = self._get_conversation(conversation_id, timeout=45)
             except Exception as exc:
                 last_error = str(exc)
                 logger.debug({"event": "image_poll_stream_check_failed", "conversation_id": conversation_id,

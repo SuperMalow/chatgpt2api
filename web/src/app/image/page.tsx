@@ -24,6 +24,8 @@ import {
   fetchImageTasks,
   type Account,
   type ImageTask,
+  type ImageTaskStreamEvent,
+  streamImageTaskEvents,
 } from "@/lib/api";
 import { useAuthGuard } from "@/lib/use-auth-guard";
 import {
@@ -343,6 +345,10 @@ async function recoverConversationHistory(items: ImageConversation[]) {
 function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
   const didLoadQuotaRef = useRef(false);
   const conversationsRef = useRef<ImageConversation[]>([]);
+  const taskStreamAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
+  const taskStreamStatesRef = useRef<Map<string, { status: "connecting" | "open" | "closed"; lastEventAt: number }>>(
+    new Map(),
+  );
   const resultsViewportRef = useRef<HTMLDivElement>(null);
   const shouldAutoScrollToBottomRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -601,6 +607,129 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     },
     [],
   );
+
+  const closeConversationTaskStream = useCallback((conversationId: string) => {
+    const controller = taskStreamAbortControllersRef.current.get(conversationId);
+    if (controller) {
+      controller.abort();
+      taskStreamAbortControllersRef.current.delete(conversationId);
+    }
+    taskStreamStatesRef.current.set(conversationId, { status: "closed", lastEventAt: Date.now() });
+  }, []);
+
+  const applyTaskStreamEvent = useCallback(
+    async (event: ImageTaskStreamEvent) => {
+      const conversationId = String(event.conversation_id || "").trim();
+      const turnId = String(event.turn_id || "").trim();
+      if (!conversationId) {
+        return;
+      }
+      if (!conversationsRef.current.some((conversation) => conversation.id === conversationId)) {
+        return;
+      }
+
+      if (event.event === "turn.completed") {
+        await updateConversation(conversationId, (current) => {
+          if (!current) {
+            return conversationsRef.current.find((conversation) => conversation.id === conversationId)!;
+          }
+          const turns = current.turns.map((turn) => {
+            if (turn.id !== turnId) {
+              return turn;
+            }
+            const derived = deriveTurnStatus(turn);
+            return { ...turn, ...derived };
+          });
+          return { ...current, updatedAt: new Date().toISOString(), turns };
+        });
+        return;
+      }
+
+      const task = event.task;
+      if (!task || !turnId) {
+        return;
+      }
+
+      await updateConversation(conversationId, (current) => {
+        if (!current) {
+          return conversationsRef.current.find((conversation) => conversation.id === conversationId)!;
+        }
+        const turns = current.turns.map((turn) => {
+          if (turn.id !== turnId) {
+            return turn;
+          }
+          const images = turn.images.map((image) => {
+            const taskId = image.taskId || image.id;
+            if (taskId !== task.id) {
+              return image;
+            }
+            return taskDataToStoredImage({ ...image, taskId }, task);
+          });
+          const nextStatus = task.status === "queued" ? "queued" : "generating";
+          const derived = deriveTurnStatus({ ...turn, status: nextStatus, images });
+          return { ...turn, ...derived, images };
+        });
+        return { ...current, updatedAt: new Date().toISOString(), turns };
+      }, { persist: task.status === "success" || task.status === "error" });
+    },
+    [updateConversation],
+  );
+
+  const ensureConversationTaskStream = useCallback(
+    (conversationId: string) => {
+      const normalizedConversationId = String(conversationId || "").trim();
+      if (!normalizedConversationId || taskStreamAbortControllersRef.current.has(normalizedConversationId)) {
+        return;
+      }
+
+      const controller = new AbortController();
+      taskStreamAbortControllersRef.current.set(normalizedConversationId, controller);
+      taskStreamStatesRef.current.set(normalizedConversationId, { status: "connecting", lastEventAt: Date.now() });
+
+      void (async () => {
+        try {
+          await streamImageTaskEvents(normalizedConversationId, {
+            signal: controller.signal,
+            onEvent: async (event) => {
+              taskStreamStatesRef.current.set(normalizedConversationId, {
+                status: "open",
+                lastEventAt: Date.now(),
+              });
+              await applyTaskStreamEvent(event);
+            },
+          });
+        } catch (error) {
+          if (!controller.signal.aborted) {
+            taskStreamStatesRef.current.set(normalizedConversationId, {
+              status: "closed",
+              lastEventAt: Date.now(),
+            });
+          }
+        } finally {
+          if (taskStreamAbortControllersRef.current.get(normalizedConversationId) === controller) {
+            taskStreamAbortControllersRef.current.delete(normalizedConversationId);
+            if (!controller.signal.aborted) {
+              taskStreamStatesRef.current.set(normalizedConversationId, {
+                status: "closed",
+                lastEventAt: Date.now(),
+              });
+            }
+          }
+        }
+      })();
+    },
+    [applyTaskStreamEvent],
+  );
+
+  useEffect(() => {
+    return () => {
+      for (const controller of taskStreamAbortControllersRef.current.values()) {
+        controller.abort();
+      }
+      taskStreamAbortControllersRef.current.clear();
+      taskStreamStatesRef.current.clear();
+    };
+  }, []);
 
   const clearComposerInputs = useCallback(() => {
     setImagePrompt("");
@@ -907,6 +1036,53 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
         });
       };
 
+      const syncPendingTasksFallback = async () => {
+        const latestConversation = conversationsRef.current.find((conversation) => conversation.id === conversationId);
+        const latestTurn = latestConversation?.turns.find((turn) => turn.id === activeTurn.id);
+        const loadingTaskIds =
+          latestTurn?.images.flatMap((image) =>
+            image.status === "loading" && image.taskId ? [image.taskId] : [],
+          ) || [];
+        if (loadingTaskIds.length === 0) {
+          return;
+        }
+
+        const taskList = await fetchImageTasks(loadingTaskIds);
+        if (taskList.items.length > 0) {
+          await applyTasks(taskList.items);
+        }
+        if (taskList.missing_ids.length > 0 && latestTurn) {
+          const missingImages = latestTurn.images.filter(
+            (image) => image.status === "loading" && image.taskId && taskList.missing_ids.includes(image.taskId),
+          );
+          const resubmitted = await Promise.all(
+            missingImages.map((image) =>
+              activeTurn.mode === "edit"
+                ? createImageEditTask(
+                    image.taskId || image.id,
+                    referenceFiles,
+                    activeTurn.prompt,
+                    activeTurn.model,
+                    activeTurn.size,
+                    conversationId,
+                    activeTurn.id,
+                  )
+                : createImageGenerationTask(
+                    image.taskId || image.id,
+                    activeTurn.prompt,
+                    activeTurn.model,
+                    activeTurn.size,
+                    conversationId,
+                    activeTurn.id,
+                  ),
+            ),
+          );
+          if (resubmitted.length > 0) {
+            await applyTasks(resubmitted);
+          }
+        }
+      };
+
       try {
         await updateConversation(conversationId, (current) => {
           const conversation = current ?? snapshot;
@@ -940,43 +1116,49 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
           pendingImages.map((image) => {
             const taskId = image.taskId || image.id;
             return activeTurn.mode === "edit"
-              ? createImageEditTask(taskId, referenceFiles, activeTurn.prompt, activeTurn.model, activeTurn.size)
-              : createImageGenerationTask(taskId, activeTurn.prompt, activeTurn.model, activeTurn.size);
+              ? createImageEditTask(
+                  taskId,
+                  referenceFiles,
+                  activeTurn.prompt,
+                  activeTurn.model,
+                  activeTurn.size,
+                  conversationId,
+                  activeTurn.id,
+                )
+              : createImageGenerationTask(
+                  taskId,
+                  activeTurn.prompt,
+                  activeTurn.model,
+                  activeTurn.size,
+                  conversationId,
+                  activeTurn.id,
+                );
           }),
         );
         await applyTasks(submitted);
+        ensureConversationTaskStream(conversationId);
 
         while (true) {
           const latestConversation = conversationsRef.current.find((conversation) => conversation.id === conversationId);
           const latestTurn = latestConversation?.turns.find((turn) => turn.id === activeTurn.id);
-          const loadingTaskIds =
-            latestTurn?.images.flatMap((image) =>
-              image.status === "loading" && image.taskId ? [image.taskId] : [],
-            ) || [];
-          if (loadingTaskIds.length === 0) {
+          const hasLoadingImages = Boolean(
+            latestTurn?.images.some((image) => image.status === "loading" && image.taskId),
+          );
+          if (!hasLoadingImages) {
             break;
           }
 
-          await sleep(2000);
-          const taskList = await fetchImageTasks(loadingTaskIds);
-          if (taskList.items.length > 0) {
-            await applyTasks(taskList.items);
+          const streamState = taskStreamStatesRef.current.get(conversationId);
+          const shouldUseFallbackPolling = streamState?.status === "closed";
+
+          if (shouldUseFallbackPolling) {
+            ensureConversationTaskStream(conversationId);
+            await sleep(5000);
+            await syncPendingTasksFallback();
+            continue;
           }
-          if (taskList.missing_ids.length > 0 && latestTurn) {
-            const missingImages = latestTurn.images.filter(
-              (image) => image.status === "loading" && image.taskId && taskList.missing_ids.includes(image.taskId),
-            );
-            const resubmitted = await Promise.all(
-              missingImages.map((image) =>
-                activeTurn.mode === "edit"
-                  ? createImageEditTask(image.taskId || image.id, referenceFiles, activeTurn.prompt, activeTurn.model, activeTurn.size)
-                  : createImageGenerationTask(image.taskId || image.id, activeTurn.prompt, activeTurn.model, activeTurn.size),
-              ),
-            );
-            if (resubmitted.length > 0) {
-              await applyTasks(resubmitted);
-            }
-          }
+
+          await sleep(500);
         }
 
         await loadQuota();
@@ -1004,6 +1186,15 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
         toast.error(message);
       } finally {
         activeConversationQueueIds.delete(conversationId);
+        const latestConversation = conversationsRef.current.find((conversation) => conversation.id === conversationId);
+        const stillHasLoadingTasks = latestConversation?.turns.some(
+          (turn) =>
+            (turn.status === "queued" || turn.status === "generating") &&
+            turn.images.some((image) => image.status === "loading"),
+        );
+        if (!stillHasLoadingTasks) {
+          closeConversationTaskStream(conversationId);
+        }
         for (const conversation of conversationsRef.current) {
           if (
             !activeConversationQueueIds.has(conversation.id) &&
@@ -1018,7 +1209,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
         }
       }
     },
-    [loadQuota, updateConversation],
+    [closeConversationTaskStream, ensureConversationTaskStream, loadQuota, updateConversation],
   );
   /* eslint-enable react-hooks/preserve-manual-memoization */
 

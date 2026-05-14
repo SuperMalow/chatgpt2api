@@ -1,4 +1,5 @@
 import { httpRequest, request } from "@/lib/request";
+import { clearStoredAuthSession, getStoredAuthKey } from "@/store/auth";
 
 export type AccountType = string;
 export type AccountStatus = "正常" | "限流" | "异常" | "禁用";
@@ -168,6 +169,8 @@ export type ImageResponse = {
 
 export type ImageTask = {
   id: string;
+  conversation_id?: string;
+  turn_id?: string;
   status: "queued" | "running" | "success" | "error";
   mode: "generate" | "edit";
   model?: ImageModel;
@@ -182,6 +185,16 @@ export type ImageTask = {
 type ImageTaskListResponse = {
   items: ImageTask[];
   missing_ids: string[];
+};
+
+export type ImageTaskStreamEvent = {
+  event: string;
+  conversation_id: string;
+  turn_id?: string;
+  task_id?: string;
+  status?: ImageTask["status"];
+  task?: ImageTask;
+  sent_at?: string;
 };
 
 export type LoginResponse = {
@@ -334,7 +347,14 @@ export async function editImage(files: File | File[], prompt: string, model?: Im
   );
 }
 
-export async function createImageGenerationTask(clientTaskId: string, prompt: string, model?: ImageModel, size?: string) {
+export async function createImageGenerationTask(
+  clientTaskId: string,
+  prompt: string,
+  model?: ImageModel,
+  size?: string,
+  conversationId?: string,
+  turnId?: string,
+) {
   return httpRequest<ImageTask>("/api/image-tasks/generations", {
     method: "POST",
     body: {
@@ -342,6 +362,8 @@ export async function createImageGenerationTask(clientTaskId: string, prompt: st
       prompt,
       ...(model ? { model } : {}),
       ...(size ? { size } : {}),
+      ...(conversationId ? { conversation_id: conversationId } : {}),
+      ...(turnId ? { turn_id: turnId } : {}),
     },
   });
 }
@@ -352,6 +374,8 @@ export async function createImageEditTask(
   prompt: string,
   model?: ImageModel,
   size?: string,
+  conversationId?: string,
+  turnId?: string,
 ) {
   const formData = new FormData();
   const uploadFiles = Array.isArray(files) ? files : [files];
@@ -367,6 +391,12 @@ export async function createImageEditTask(
   if (size) {
     formData.append("size", size);
   }
+  if (conversationId) {
+    formData.append("conversation_id", conversationId);
+  }
+  if (turnId) {
+    formData.append("turn_id", turnId);
+  }
 
   return httpRequest<ImageTask>("/api/image-tasks/edits", {
     method: "POST",
@@ -380,6 +410,100 @@ export async function fetchImageTasks(ids: string[]) {
     params.set("ids", ids.join(","));
   }
   return httpRequest<ImageTaskListResponse>(`/api/image-tasks${params.toString() ? `?${params.toString()}` : ""}`);
+}
+
+function parseSseBlocks(buffer: string) {
+  const blocks: string[] = [];
+  let offset = 0;
+  while (true) {
+    const separatorIndex = buffer.indexOf("\n\n", offset);
+    if (separatorIndex === -1) {
+      break;
+    }
+    blocks.push(buffer.slice(offset, separatorIndex));
+    offset = separatorIndex + 2;
+  }
+  return {
+    blocks,
+    remainder: buffer.slice(offset),
+  };
+}
+
+function parseSseEvent(block: string): { event: string; data: string } | null {
+  const lines = block.split(/\r?\n/);
+  let event = "message";
+  const dataLines: string[] = [];
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    if (!line || line.startsWith(":")) {
+      continue;
+    }
+    if (line.startsWith("event:")) {
+      event = line.slice(6).trim() || "message";
+      continue;
+    }
+    if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).trimStart());
+    }
+  }
+  if (dataLines.length === 0) {
+    return null;
+  }
+  return { event, data: dataLines.join("\n") };
+}
+
+export async function streamImageTaskEvents(
+  conversationId: string,
+  options: {
+    signal: AbortSignal;
+    onEvent: (event: ImageTaskStreamEvent) => void | Promise<void>;
+  },
+) {
+  const authKey = await getStoredAuthKey();
+  const params = new URLSearchParams({ conversation_id: conversationId });
+  const response = await fetch(`${request.defaults.baseURL}/api/image-tasks/events?${params.toString()}`, {
+    method: "GET",
+    headers: {
+      Accept: "text/event-stream",
+      ...(authKey ? { Authorization: `Bearer ${authKey}` } : {}),
+    },
+    cache: "no-store",
+    signal: options.signal,
+  });
+
+  if (response.status === 401) {
+    await clearStoredAuthSession();
+    throw new Error("登录已失效，请重新登录");
+  }
+  if (!response.ok || !response.body) {
+    throw new Error(`图片任务流连接失败 (${response.status})`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      const parsed = parseSseBlocks(buffer);
+      buffer = parsed.remainder;
+      for (const block of parsed.blocks) {
+        const event = parseSseEvent(block);
+        if (!event) {
+          continue;
+        }
+        const payload = JSON.parse(event.data) as Omit<ImageTaskStreamEvent, "event">;
+        await options.onEvent({ event: event.event, ...payload });
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 export async function fetchSettingsConfig() {

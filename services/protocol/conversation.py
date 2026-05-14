@@ -728,7 +728,7 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
                     raise ImageGenerationError(image_stream_error_message(last_error)) from exc
                 if emitted:
                     return
-                raise ImageGenerationError(str(exc) or "image generation failed") from exc
+                raise ImageGenerationError(image_stream_error_message(str(exc) or "image generation failed")) from exc
 
             attempted_tokens.add(token)
             emitted_for_token = False

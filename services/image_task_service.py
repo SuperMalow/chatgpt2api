@@ -10,8 +10,10 @@ from typing import Any
 
 from services.config import DATA_DIR, config
 from services.content_filter import request_text
+from services.image_task_events import image_task_event_service
 from services.log_service import LOG_TYPE_CALL, log_service
 from services.protocol import openai_v1_image_edit, openai_v1_image_generations
+from services.protocol.conversation import image_stream_error_message
 
 TASK_STATUS_QUEUED = "queued"
 TASK_STATUS_RUNNING = "running"
@@ -64,6 +66,8 @@ def _collect_image_urls(data: list[Any]) -> list[str]:
 def _public_task(task: dict[str, Any]) -> dict[str, Any]:
     item = {
         "id": task.get("id"),
+        "conversation_id": task.get("conversation_id"),
+        "turn_id": task.get("turn_id"),
         "status": task.get("status"),
         "mode": task.get("mode"),
         "model": task.get("model"),
@@ -112,6 +116,8 @@ class ImageTaskService:
         model: str,
         size: str | None,
         base_url: str,
+        conversation_id: str = "",
+        turn_id: str = "",
     ) -> dict[str, Any]:
         payload = {
             "prompt": prompt,
@@ -121,7 +127,14 @@ class ImageTaskService:
             "response_format": "url",
             "base_url": base_url,
         }
-        return self._submit(identity, client_task_id=client_task_id, mode="generate", payload=payload)
+        return self._submit(
+            identity,
+            client_task_id=client_task_id,
+            mode="generate",
+            payload=payload,
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+        )
 
     def submit_edit(
         self,
@@ -133,6 +146,8 @@ class ImageTaskService:
         size: str | None,
         base_url: str,
         images: list[tuple[bytes, str, str]],
+        conversation_id: str = "",
+        turn_id: str = "",
     ) -> dict[str, Any]:
         payload = {
             "prompt": prompt,
@@ -143,7 +158,14 @@ class ImageTaskService:
             "response_format": "url",
             "base_url": base_url,
         }
-        return self._submit(identity, client_task_id=client_task_id, mode="edit", payload=payload)
+        return self._submit(
+            identity,
+            client_task_id=client_task_id,
+            mode="edit",
+            payload=payload,
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+        )
 
     def list_tasks(self, identity: dict[str, object], task_ids: list[str]) -> dict[str, Any]:
         owner = _owner_id(identity)
@@ -169,6 +191,22 @@ class ImageTaskService:
                 missing_ids = []
             return {"items": items, "missing_ids": missing_ids}
 
+    def list_tasks_for_conversation(self, identity: dict[str, object], conversation_id: str) -> dict[str, Any]:
+        owner = _owner_id(identity)
+        normalized_conversation_id = _clean(conversation_id)
+        if not normalized_conversation_id:
+            return {"items": [], "missing_ids": []}
+        with self._lock:
+            if self._cleanup_locked():
+                self._save_locked()
+            items = [
+                _public_task(task)
+                for task in self._tasks.values()
+                if task.get("owner_id") == owner and _clean(task.get("conversation_id")) == normalized_conversation_id
+            ]
+            items.sort(key=lambda item: str(item.get("updated_at") or ""))
+            return {"items": items, "missing_ids": []}
+
     def _submit(
         self,
         identity: dict[str, object],
@@ -176,6 +214,8 @@ class ImageTaskService:
         client_task_id: str,
         mode: str,
         payload: dict[str, Any],
+        conversation_id: str,
+        turn_id: str,
     ) -> dict[str, Any]:
         task_id = _clean(client_task_id)
         if not task_id:
@@ -194,6 +234,8 @@ class ImageTaskService:
             task = {
                 "id": task_id,
                 "owner_id": owner,
+                "conversation_id": _clean(conversation_id),
+                "turn_id": _clean(turn_id),
                 "status": TASK_STATUS_QUEUED,
                 "mode": mode,
                 "model": _clean(payload.get("model"), "gpt-image-2"),
@@ -204,8 +246,10 @@ class ImageTaskService:
             self._tasks[key] = task
             self._save_locked()
             should_start = True
+            event_payload = self._build_task_event_locked(task, TASK_STATUS_QUEUED)
 
         if should_start:
+            self._publish_task_event(event_payload)
             thread = threading.Thread(
                 target=self._run_task,
                 args=(key, mode, payload, dict(identity), _clean(payload.get("model"), "gpt-image-2")),
@@ -245,7 +289,7 @@ class ImageTaskService:
                 urls=_collect_image_urls(data),
             )
         except Exception as exc:
-            error_message = str(exc) or "image task failed"
+            error_message = image_stream_error_message(str(exc) or "image task failed")
             error_detail = getattr(exc, "detail", None)
             if not isinstance(error_detail, dict):
                 error_detail = None
@@ -303,13 +347,59 @@ class ImageTaskService:
             pass
 
     def _update_task(self, key: str, **updates: Any) -> None:
+        task_event: dict[str, Any] | None = None
+        turn_event: dict[str, Any] | None = None
         with self._lock:
             task = self._tasks.get(key)
             if task is None:
                 return
             task.update(updates)
             task["updated_at"] = _now_iso()
+            task_event = self._build_task_event_locked(task)
+            turn_event = self._build_turn_completed_event_locked(task)
             self._save_locked()
+        self._publish_task_event(task_event)
+        self._publish_task_event(turn_event)
+
+    def _build_task_event_locked(self, task: dict[str, Any], status_override: str | None = None) -> dict[str, Any]:
+        status = _clean(status_override or task.get("status"))
+        return {
+            "event": f"task.{status}",
+            "conversation_id": _clean(task.get("conversation_id")),
+            "turn_id": _clean(task.get("turn_id")),
+            "task_id": _clean(task.get("id")),
+            "status": status,
+            "task": _public_task(task),
+            "sent_at": _now_iso(),
+        }
+
+    def _build_turn_completed_event_locked(self, task: dict[str, Any]) -> dict[str, Any] | None:
+        conversation_id = _clean(task.get("conversation_id"))
+        turn_id = _clean(task.get("turn_id"))
+        owner_id = _clean(task.get("owner_id"))
+        if not conversation_id or not turn_id or task.get("status") not in TERMINAL_STATUSES:
+            return None
+        related = [
+            item
+            for item in self._tasks.values()
+            if _clean(item.get("owner_id")) == owner_id
+            and _clean(item.get("conversation_id")) == conversation_id
+            and _clean(item.get("turn_id")) == turn_id
+        ]
+        if not related or any(item.get("status") in UNFINISHED_STATUSES for item in related):
+            return None
+        return {
+            "event": "turn.completed",
+            "conversation_id": conversation_id,
+            "turn_id": turn_id,
+            "sent_at": _now_iso(),
+        }
+
+    @staticmethod
+    def _publish_task_event(event: dict[str, Any] | None) -> None:
+        if not isinstance(event, dict):
+            return
+        image_task_event_service.publish(_clean(event.get("conversation_id")), event)
 
     def _load_locked(self) -> dict[str, dict[str, Any]]:
         if not self.path.exists():
@@ -335,6 +425,8 @@ class ImageTaskService:
             task = {
                 "id": task_id,
                 "owner_id": owner,
+                "conversation_id": _clean(item.get("conversation_id")),
+                "turn_id": _clean(item.get("turn_id")),
                 "status": status,
                 "mode": "edit" if item.get("mode") == "edit" else "generate",
                 "model": _clean(item.get("model"), "gpt-image-2"),
