@@ -64,6 +64,10 @@ def image_stream_error_message(message: str) -> str:
     return text or "image generation failed"
 
 
+def is_upstream_image_connection_error(message: str) -> bool:
+    return image_stream_error_message(message) == "upstream image connection failed, please retry later"
+
+
 def _short_text(value: object, limit: int = 500) -> str:
     text = " ".join(str(value or "").split())
     if len(text) <= limit:
@@ -686,14 +690,18 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
     emitted = False
     last_error = ""
     for index in range(1, request.n + 1):
+        attempted_tokens: set[str] = set()
         while True:
             try:
-                token = account_service.get_available_access_token()
+                token = account_service.get_available_access_token(excluded_tokens=attempted_tokens)
             except RuntimeError as exc:
+                if last_error and not emitted and attempted_tokens:
+                    raise ImageGenerationError(image_stream_error_message(last_error)) from exc
                 if emitted:
                     return
                 raise ImageGenerationError(str(exc) or "image generation failed") from exc
 
+            attempted_tokens.add(token)
             emitted_for_token = False
             returned_message = False
             returned_result = False
@@ -726,6 +734,8 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
                 logger.warning({"event": "image_stream_fail", "request_token": token, "error": last_error})
                 if not emitted_for_token and is_token_invalid_error(last_error):
                     account_service.remove_invalid_token(token, "image_stream")
+                    continue
+                if not emitted_for_token and is_upstream_image_connection_error(last_error):
                     continue
                 raise ImageGenerationError(image_stream_error_message(last_error)) from exc
 
