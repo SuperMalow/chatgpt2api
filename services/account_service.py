@@ -117,12 +117,19 @@ class AccountService:
 
     def get_available_access_token(self, excluded_tokens: set[str] | None = None) -> str:
         attempted_tokens: set[str] = set(excluded_tokens or set())
+        last_error: Exception | None = None
         while True:
-            access_token = self._acquire_next_candidate_token(excluded_tokens=attempted_tokens)
+            try:
+                access_token = self._acquire_next_candidate_token(excluded_tokens=attempted_tokens)
+            except RuntimeError as exc:
+                if last_error is not None:
+                    raise RuntimeError(str(last_error)) from last_error
+                raise
             attempted_tokens.add(access_token)
             try:
                 account = self.fetch_remote_info(access_token, "get_available_access_token")
-            except Exception:
+            except Exception as exc:
+                last_error = exc
                 self.release_image_slot(access_token)
                 continue
             if self._is_image_account_available(account or {}):

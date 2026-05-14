@@ -195,6 +195,18 @@ class ConfigStore:
             return 3
 
     @property
+    def image_backend_default(self) -> str:
+        value = str(self.data.get("image_backend_default") or "native").strip().lower()
+        return value if value in {"native", "conversation"} else "native"
+
+    @property
+    def image_backend_fallback_enabled(self) -> bool:
+        value = self.data.get("image_backend_fallback_enabled", True)
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
+    @property
     def auto_remove_invalid_accounts(self) -> bool:
         value = self.data.get("auto_remove_invalid_accounts", False)
         if isinstance(value, str):
@@ -278,6 +290,8 @@ class ConfigStore:
         data["image_retention_days"] = self.image_retention_days
         data["image_poll_timeout_secs"] = self.image_poll_timeout_secs
         data["image_account_concurrency"] = self.image_account_concurrency
+        data["image_backend_default"] = self.image_backend_default
+        data["image_backend_fallback_enabled"] = self.image_backend_fallback_enabled
         data["auto_remove_invalid_accounts"] = self.auto_remove_invalid_accounts
         data["auto_remove_rate_limited_accounts"] = self.auto_remove_rate_limited_accounts
         data["log_levels"] = self.log_levels

@@ -142,6 +142,59 @@ class OpenAIBackendAPI:
         return headers
 
     @staticmethod
+    def _is_retryable_request_error(exc: Exception) -> bool:
+        text = str(exc or "").lower()
+        return (
+            isinstance(
+                exc,
+                (
+                    requests.exceptions.Timeout,
+                    requests.exceptions.ConnectionError,
+                    requests.exceptions.ProxyError,
+                    requests.exceptions.SSLError,
+                    requests.exceptions.ConnectTimeout,
+                    requests.exceptions.ReadTimeout,
+                ),
+            )
+            or "curl: (28)" in text
+            or "curl: (35)" in text
+            or "tls connect error" in text
+            or "openssl_internal" in text
+            or "operation timed out" in text
+            or "timed out after" in text
+            or "0 bytes received" in text
+        )
+
+    def _request_with_local_retry(
+            self,
+            method: str,
+            url: str,
+            *,
+            retry_attempts: int = 3,
+            retry_delay: float = 0.8,
+            **kwargs,
+    ):
+        last_error: Exception | None = None
+        for attempt in range(1, max(1, retry_attempts) + 1):
+            try:
+                return self.session.request(method.upper(), url, **kwargs)
+            except Exception as exc:
+                last_error = exc
+                if attempt >= retry_attempts or not self._is_retryable_request_error(exc):
+                    raise
+                logger.warning({
+                    "event": "upstream_request_retry",
+                    "method": method.upper(),
+                    "url": url,
+                    "attempt": attempt,
+                    "retry_attempts": retry_attempts,
+                    "error": str(exc),
+                })
+                time.sleep(retry_delay * attempt)
+        if last_error is not None:
+            raise last_error
+
+    @staticmethod
     def _extract_quota_and_restore_at(limits_progress: list[Any]) -> tuple[int, str | None, bool]:
         for item in limits_progress:
             if isinstance(item, dict) and item.get("feature_name") == "image_gen":
@@ -393,14 +446,14 @@ class OpenAIBackendAPI:
             },
         }
 
-    def _image_model_slug(self, model: str) -> str:
+    def _image_model_slug(self, model: str, *, mode: str = "native") -> str:
         """把标准图片模型名映射到底层 model slug。"""
         model = str(model or "").strip()
         if not model:
             return "auto"
-        if model == "gpt-image-2":
+        if mode == "conversation" and model == "gpt-image-2":
             return "gpt-5-3"
-        if model == CODEX_IMAGE_MODEL:
+        if model in {"gpt-image-2", CODEX_IMAGE_MODEL}:
             return model
         return "auto"
 
@@ -420,14 +473,21 @@ class OpenAIBackendAPI:
             headers["X-Oai-Turn-Trace-Id"] = new_uuid()
         return self._headers(path, headers)
 
-    def _prepare_image_conversation(self, prompt: str, requirements: ChatRequirements, model: str) -> str:
+    def _prepare_image_conversation(
+            self,
+            prompt: str,
+            requirements: ChatRequirements,
+            model: str,
+            *,
+            slug_mode: str = "native",
+    ) -> str:
         """为图片生成准备 conduit token。"""
         path = "/backend-api/f/conversation/prepare"
         payload = {
             "action": "next",
             "fork_from_shared_post": False,
             "parent_message_id": new_uuid(),
-            "model": self._image_model_slug(model),
+            "model": self._image_model_slug(model, mode=slug_mode),
             "client_prepare_state": "success",
             "timezone_offset_min": -480,
             "timezone": "Asia/Shanghai",
@@ -442,7 +502,8 @@ class OpenAIBackendAPI:
             "supported_encodings": ["v1"],
             "client_contextual_info": {"app_name": "chatgpt.com"},
         }
-        response = self.session.post(
+        response = self._request_with_local_retry(
+            "POST",
             self.base_url + path,
             headers=self._image_headers(path, requirements),
             json=payload,
@@ -483,7 +544,8 @@ class OpenAIBackendAPI:
         width, height = image.size
         mime_type = Image.MIME.get(image.format, "image/png")
         path = "/backend-api/files"
-        response = self.session.post(
+        response = self._request_with_local_retry(
+            "POST",
             self.base_url + path,
             headers=self._headers(path, {"Content-Type": "application/json", "Accept": "application/json"}),
             json={"file_name": file_name, "file_size": len(data), "use_case": "multimodal", "width": width,
@@ -493,7 +555,8 @@ class OpenAIBackendAPI:
         ensure_ok(response, path)
         upload_meta = response.json()
         time.sleep(0.5)
-        response = self.session.put(
+        response = self._request_with_local_retry(
+            "PUT",
             upload_meta["upload_url"],
             headers={
                 "Content-Type": mime_type,
@@ -510,7 +573,8 @@ class OpenAIBackendAPI:
         )
         ensure_ok(response, "image_upload")
         path = f"/backend-api/files/{upload_meta['file_id']}/uploaded"
-        response = self.session.post(
+        response = self._request_with_local_retry(
+            "POST",
             self.base_url + path,
             headers=self._headers(path, {"Content-Type": "application/json", "Accept": "application/json"}),
             data="{}",
@@ -526,8 +590,16 @@ class OpenAIBackendAPI:
             "height": height,
         }
 
-    def _start_image_generation(self, prompt: str, requirements: ChatRequirements, conduit_token: str, model: str,
-                                references: Optional[list[Dict[str, Any]]] = None) -> requests.Response:
+    def _start_image_generation(
+            self,
+            prompt: str,
+            requirements: ChatRequirements,
+            conduit_token: str,
+            model: str,
+            references: Optional[list[Dict[str, Any]]] = None,
+            *,
+            slug_mode: str = "native",
+    ) -> requests.Response:
         """启动图片生成或编辑的 SSE 请求。"""
         references = references or []
         parts = [{
@@ -566,7 +638,7 @@ class OpenAIBackendAPI:
                 "metadata": metadata,
             }],
             "parent_message_id": new_uuid(),
-            "model": self._image_model_slug(model),
+            "model": self._image_model_slug(model, mode=slug_mode),
             "client_prepare_state": "sent",
             "timezone_offset_min": -480,
             "timezone": "Asia/Shanghai",
@@ -589,7 +661,8 @@ class OpenAIBackendAPI:
             "force_parallel_switch": "auto",
         }
         path = "/backend-api/f/conversation"
-        response = self.session.post(
+        response = self._request_with_local_retry(
+            "POST",
             self.base_url + path,
             headers=self._image_headers(path, requirements, conduit_token, "text/event-stream"),
             json=payload,
@@ -602,8 +675,12 @@ class OpenAIBackendAPI:
     def _get_conversation(self, conversation_id: str, timeout: float = 60) -> Dict[str, Any]:
         """获取完整 conversation 详情。"""
         path = f"/backend-api/conversation/{conversation_id}"
-        response = self.session.get(self.base_url + path, headers=self._headers(path, {"Accept": "application/json"}),
-                                    timeout=timeout)
+        response = self._request_with_local_retry(
+            "GET",
+            self.base_url + path,
+            headers=self._headers(path, {"Accept": "application/json"}),
+            timeout=timeout,
+        )
         ensure_ok(response, path)
         return response.json()
 
@@ -785,8 +862,12 @@ class OpenAIBackendAPI:
     def _get_file_download_url(self, file_id: str) -> str:
         """获取文件下载地址。"""
         path = f"/backend-api/files/{file_id}/download"
-        response = self.session.get(self.base_url + path, headers=self._headers(path, {"Accept": "application/json"}),
-                                    timeout=60)
+        response = self._request_with_local_retry(
+            "GET",
+            self.base_url + path,
+            headers=self._headers(path, {"Accept": "application/json"}),
+            timeout=60,
+        )
         ensure_ok(response, path)
         data = response.json()
         return data.get("download_url") or data.get("url") or ""
@@ -794,8 +875,12 @@ class OpenAIBackendAPI:
     def _get_attachment_download_url(self, conversation_id: str, attachment_id: str) -> str:
         """通过 conversation 附件接口获取下载地址。"""
         path = f"/backend-api/conversation/{conversation_id}/attachment/{attachment_id}/download"
-        response = self.session.get(self.base_url + path, headers=self._headers(path, {"Accept": "application/json"}),
-                                    timeout=60)
+        response = self._request_with_local_retry(
+            "GET",
+            self.base_url + path,
+            headers=self._headers(path, {"Accept": "application/json"}),
+            timeout=60,
+        )
         ensure_ok(response, path)
         data = response.json()
         return data.get("download_url") or data.get("url") or ""
@@ -939,7 +1024,7 @@ class OpenAIBackendAPI:
     def download_image_bytes(self, urls: list[str]) -> list[bytes]:
         images = []
         for url in urls:
-            response = self.session.get(url, timeout=120)
+            response = self._request_with_local_retry("GET", url, timeout=120)
             ensure_ok(response, "image_download")
             images.append(response.content)
         return images
@@ -980,22 +1065,35 @@ class OpenAIBackendAPI:
             prompt: str,
             model: str,
             images: list[str],
+            *,
+            slug_mode: str = "native",
     ) -> Iterator[str]:
         if not self.access_token:
             raise RuntimeError("access_token is required for image endpoints")
         references = [self._upload_image(image, f"image_{idx}.png") for idx, image in enumerate(images, start=1)]
         self._bootstrap()
         requirements = self._get_chat_requirements()
-        conduit_token = self._prepare_image_conversation(prompt, requirements, model)
-        response = self._start_image_generation(prompt, requirements, conduit_token, model, references)
+        conduit_token = self._prepare_image_conversation(prompt, requirements, model, slug_mode=slug_mode)
+        response = self._start_image_generation(prompt, requirements, conduit_token, model, references, slug_mode=slug_mode)
         try:
             yield from iter_sse_payloads(response)
         finally:
             response.close()
 
+    def stream_image_conversation(
+            self,
+            prompt: str,
+            model: str,
+            images: list[str],
+            *,
+            slug_mode: str = "native",
+    ) -> Iterator[str]:
+        yield from self._stream_picture_conversation(prompt, model, images, slug_mode=slug_mode)
+
     def _bootstrap(self) -> None:
         """预热首页，并提取 PoW 相关脚本引用。"""
-        response = self.session.get(
+        response = self._request_with_local_retry(
+            "GET",
             self.base_url + "/",
             headers=self._bootstrap_headers(),
             timeout=30,
@@ -1010,7 +1108,8 @@ class OpenAIBackendAPI:
         path = "/backend-api/sentinel/chat-requirements" if self.access_token else "/backend-anon/sentinel/chat-requirements"
         context = "auth_chat_requirements" if self.access_token else "noauth_chat_requirements"
         body = {"p": build_legacy_requirements_token(self.user_agent, self.pow_script_sources, self.pow_data_build)}
-        response = self.session.post(
+        response = self._request_with_local_retry(
+            "POST",
             self.base_url + path,
             headers=self._headers(path, {"Content-Type": "application/json"}),
             json=body,

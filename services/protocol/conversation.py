@@ -13,6 +13,8 @@ import tiktoken
 
 from services.account_service import account_service
 from services.config import config
+from services.image_backends import get_image_backend_specs, is_image_backend_fallback_error
+from services.image_backends.base import ImageBackendSpec
 from services.openai_backend_api import OpenAIBackendAPI
 from utils.helper import IMAGE_MODELS, extract_image_from_message_content
 from utils.log import logger
@@ -59,7 +61,15 @@ def is_token_invalid_error(message: str) -> bool:
 def image_stream_error_message(message: str) -> str:
     text = str(message or "")
     lower = text.lower()
-    if "curl: (35)" in lower or "tls connect error" in lower or "openssl_internal" in lower:
+    if (
+        "curl: (35)" in lower
+        or "curl: (28)" in lower
+        or "tls connect error" in lower
+        or "openssl_internal" in lower
+        or "operation timed out" in lower
+        or "timed out after" in lower
+        or "0 bytes received" in lower
+    ):
         return "upstream image connection failed, please retry later"
     return text or "image generation failed"
 
@@ -211,6 +221,12 @@ def build_image_prompt(prompt: str, size: str | None) -> str:
         "3:4": "输出为 3:4 比例，纵向构图，适合人物肖像或竖向场景。",
     }[size]
     return f"{prompt.strip()}\n\n{hint}"
+
+
+def image_backend_prompt(prompt: str, size: str | None, backend_spec: ImageBackendSpec) -> str:
+    if backend_spec.use_legacy_prompt_hint:
+        return build_image_prompt(prompt, size)
+    return prompt.strip()
 
 
 def encoding_for_model(model: str):
@@ -518,19 +534,28 @@ def conversation_events(
     prompt: str = "",
     images: list[str] | None = None,
     size: str | None = None,
+    image_backend: ImageBackendSpec | None = None,
 ) -> Iterator[dict[str, Any]]:
     normalized = normalize_messages(messages or ([{"role": "user", "content": prompt}] if prompt else []))
     image_model = str(model or "").strip() in IMAGE_MODELS
     history_text = "" if image_model else assistant_history_text(normalized)
     history_messages = [] if image_model else assistant_history_messages(normalized)
-    final_prompt = prompt_with_global_system(build_image_prompt(prompt, size)) if image_model else prompt
-    payloads = backend.stream_conversation(
-        messages=normalized,
-        model=model,
-        prompt=final_prompt,
-        images=images if image_model else None,
-        system_hints=["picture_v2"] if image_model else None,
-    )
+    final_prompt = prompt_with_global_system(prompt) if image_model else prompt
+    if image_model:
+        payloads = backend.stream_image_conversation(
+            prompt=final_prompt,
+            model=model,
+            images=images or [],
+            slug_mode=(image_backend.slug_mode if image_backend else "native"),
+        )
+    else:
+        payloads = backend.stream_conversation(
+            messages=normalized,
+            model=model,
+            prompt=final_prompt,
+            images=None,
+            system_hints=None,
+        )
     yield from iter_conversation_payloads(payloads, history_text, history_messages)
 
 
@@ -577,14 +602,18 @@ def stream_image_outputs(
         request: ConversationRequest,
         index: int = 1,
         total: int = 1,
+        image_backend: ImageBackendSpec | None = None,
 ) -> Iterator[ImageOutput]:
+    active_image_backend = image_backend or ImageBackendSpec(name="native")
     last: dict[str, Any] = {}
+    request_prompt = image_backend_prompt(request.prompt, request.size, active_image_backend)
     for event in conversation_events(
             backend,
-            prompt=request.prompt,
+            prompt=request_prompt,
             model=request.model,
             images=request.images or [],
-            size=request.size,
+            size=None,
+            image_backend=active_image_backend,
     ):
         last = event
         if event.get("type") == "conversation.delta":
@@ -657,7 +686,7 @@ def stream_image_outputs(
         ]
         data = format_image_result(
             image_items,
-            request.prompt,
+            request_prompt,
             request.response_format,
             request.base_url,
             int(time.time()),
@@ -705,21 +734,76 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
             emitted_for_token = False
             returned_message = False
             returned_result = False
+            backend_fallbacks: list[dict[str, str]] = []
+            backend_specs = get_image_backend_specs()
             try:
-                backend = OpenAIBackendAPI(access_token=token)
-                for output in stream_image_outputs(backend, request, index, request.n):
-                    if output.kind == "message" and request.message_as_error:
-                        raise ImageGenerationError(
-                            output.text or "Image generation was rejected by upstream policy.",
-                            status_code=400,
-                            error_type="invalid_request_error",
-                            code="content_policy_violation",
-                        )
-                    emitted = True
-                    emitted_for_token = True
-                    returned_message = output.kind == "message"
-                    returned_result = returned_result or output.kind == "result"
-                    yield output
+                for backend_index, backend_spec in enumerate(backend_specs):
+                    logger.info({
+                        "event": "image_backend_attempt",
+                        "backend": backend_spec.name,
+                        "model": request.model,
+                        "size": request.size,
+                        "index": index,
+                        "total": request.n,
+                        "fallback_count": len(backend_fallbacks),
+                    })
+                    backend = OpenAIBackendAPI(access_token=token)
+                    try:
+                        for output in stream_image_outputs(backend, request, index, request.n, image_backend=backend_spec):
+                            if output.kind == "message" and request.message_as_error:
+                                raise ImageGenerationError(
+                                    output.text or "Image generation was rejected by upstream policy.",
+                                    status_code=400,
+                                    error_type="invalid_request_error",
+                                    code="content_policy_violation",
+                                )
+                            emitted = True
+                            emitted_for_token = True
+                            returned_message = output.kind == "message"
+                            returned_result = returned_result or output.kind == "result"
+                            yield output
+                        logger.info({
+                            "event": "image_backend_success",
+                            "backend": backend_spec.name,
+                            "model": request.model,
+                            "size": request.size,
+                            "token_attempted": token,
+                            "fell_back": bool(backend_fallbacks),
+                            "fallbacks": backend_fallbacks,
+                        })
+                        break
+                    except ImageGenerationError as exc:
+                        error_message = str(exc)
+                        if is_image_backend_fallback_error(error_message) and backend_index < len(backend_specs) - 1:
+                            backend_fallbacks.append({"backend": backend_spec.name, "reason": error_message})
+                            logger.warning({
+                                "event": "image_backend_fallback",
+                                "backend": backend_spec.name,
+                                "next_backend": backend_specs[backend_index + 1].name,
+                                "error": error_message,
+                                "model": request.model,
+                                "size": request.size,
+                            })
+                            continue
+                        raise
+                    except Exception as exc:
+                        error_message = str(exc)
+                        if not emitted_for_token and is_token_invalid_error(error_message):
+                            raise
+                        if is_image_backend_fallback_error(image_stream_error_message(error_message)) and backend_index < len(backend_specs) - 1:
+                            backend_fallbacks.append({"backend": backend_spec.name, "reason": error_message})
+                            logger.warning({
+                                "event": "image_backend_fallback",
+                                "backend": backend_spec.name,
+                                "next_backend": backend_specs[backend_index + 1].name,
+                                "error": error_message,
+                                "model": request.model,
+                                "size": request.size,
+                            })
+                            continue
+                        raise
+                else:
+                    raise ImageGenerationError("image generation failed")
                 if returned_message or not returned_result:
                     account_service.mark_image_result(token, False)
                     return
