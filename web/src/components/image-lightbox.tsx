@@ -54,13 +54,16 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
-function getTouchDistance(touches: TouchList) {
+function getTouchDistance(touches: React.TouchList) {
   const first = touches[0];
   const second = touches[1];
-  return Math.hypot(first.clientX - second.clientX, first.clientY - second.clientY);
+  return Math.hypot(
+    first.clientX - second.clientX,
+    first.clientY - second.clientY,
+  );
 }
 
-function getTouchCenter(touches: TouchList) {
+function getTouchCenter(touches: React.TouchList) {
   const first = touches[0];
   const second = touches[1];
   return {
@@ -94,7 +97,11 @@ export function ImageLightbox({
   const lastTapRef = useRef(0);
   const pendingTransformRef = useRef<ImageTransform | null>(null);
   const rafRef = useRef<number | null>(null);
-  const [transform, setTransform] = useState<ImageTransform>({ scale: 1, x: 0, y: 0 });
+  const [transform, setTransform] = useState<ImageTransform>({
+    scale: 1,
+    x: 0,
+    y: 0,
+  });
   const [isGesturing, setIsGesturing] = useState(false);
   const current = images[currentIndex];
   const hasPrev = currentIndex > 0;
@@ -188,7 +195,9 @@ export function ImageLightbox({
 
   const toggleZoom = useCallback(() => {
     setTransform((currentTransform) =>
-      currentTransform.scale > minScale ? { scale: 1, x: 0, y: 0 } : { scale: 2.5, x: 0, y: 0 },
+      currentTransform.scale > minScale
+        ? { scale: 1, x: 0, y: 0 }
+        : { scale: 2.5, x: 0, y: 0 },
     );
   }, []);
 
@@ -248,7 +257,8 @@ export function ImageLightbox({
       if (gesture.type === "pinch" && event.touches.length === 2) {
         event.preventDefault();
         const targetScale = clamp(
-          (getTouchDistance(event.touches) / gesture.startDistance) * gesture.startTransform.scale,
+          (getTouchDistance(event.touches) / gesture.startDistance) *
+            gesture.startTransform.scale,
           minScale,
           maxScale,
         );
@@ -259,11 +269,13 @@ export function ImageLightbox({
         const nextX =
           center.x -
           viewportCenterX -
-          (gesture.startCenterX - viewportCenterX - gesture.startTransform.x) * effectiveRatio;
+          (gesture.startCenterX - viewportCenterX - gesture.startTransform.x) *
+            effectiveRatio;
         const nextY =
           center.y -
           viewportCenterY -
-          (gesture.startCenterY - viewportCenterY - gesture.startTransform.y) * effectiveRatio;
+          (gesture.startCenterY - viewportCenterY - gesture.startTransform.y) *
+            effectiveRatio;
         scheduleTransform(
           normalizeTransform({ scale: targetScale, x: nextX, y: nextY }),
         );
@@ -308,7 +320,11 @@ export function ImageLightbox({
       const deltaY = touch.clientY - gesture.startY;
       const now = Date.now();
 
-      if (Math.abs(deltaX) < 10 && Math.abs(deltaY) < 10 && now - lastTapRef.current < 280) {
+      if (
+        Math.abs(deltaX) < 10 &&
+        Math.abs(deltaY) < 10 &&
+        now - lastTapRef.current < 280
+      ) {
         event.preventDefault();
         lastTapRef.current = 0;
         toggleZoom();
@@ -352,7 +368,9 @@ export function ImageLightbox({
           <div className="absolute top-[calc(env(safe-area-inset-top)+1rem)] right-4 z-10 flex items-center gap-2">
             {current.sizeLabel || current.dimensions ? (
               <span className="rounded-full bg-black/50 px-3 py-1.5 text-xs font-medium text-white/90">
-                {[current.sizeLabel, current.dimensions].filter(Boolean).join(" · ")}
+                {[current.sizeLabel, current.dimensions]
+                  .filter(Boolean)
+                  .join(" · ")}
               </span>
             ) : null}
             {images.length > 1 && (
@@ -399,7 +417,9 @@ export function ImageLightbox({
               className={cn(
                 "max-h-[90vh] max-w-[90vw] rounded-lg object-contain will-change-transform",
                 isGesturing ? "" : "transition-transform duration-150 ease-out",
-                transform.scale > minScale ? "cursor-grab active:cursor-grabbing" : "cursor-zoom-in",
+                transform.scale > minScale
+                  ? "cursor-grab active:cursor-grabbing"
+                  : "cursor-zoom-in",
               )}
               style={{
                 transform: `translate3d(${transform.x}px, ${transform.y}px, 0) scale(${transform.scale})`,

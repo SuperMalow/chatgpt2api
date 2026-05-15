@@ -26,14 +26,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import { createAccounts, type Account } from "@/lib/api";
+import { createAccounts } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 type ImportMethod = "menu" | "token" | "session" | "cpa";
 
 type AccountImportDialogProps = {
   disabled?: boolean;
-  onImported: (items: Account[]) => void;
+  onImported: () => void;
 };
 
 type PendingCpaImport = {
@@ -64,8 +64,10 @@ function getCpaAccessToken(value: unknown) {
 function readFileAsText(file: File) {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
-    reader.onerror = () => reject(reader.error ?? new Error(`读取文件失败: ${file.name}`));
+    reader.onload = () =>
+      resolve(typeof reader.result === "string" ? reader.result : "");
+    reader.onerror = () =>
+      reject(reader.error ?? new Error(`读取文件失败: ${file.name}`));
     reader.readAsText(file);
   });
 }
@@ -94,7 +96,9 @@ function MethodCard({
           </div>
           <div className="space-y-1">
             <div className="text-sm font-semibold text-stone-900">{title}</div>
-            <div className="text-sm leading-6 text-stone-500">{description}</div>
+            <div className="text-sm leading-6 text-stone-500">
+              {description}
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -102,14 +106,18 @@ function MethodCard({
   );
 }
 
-export function AccountImportDialog({ disabled, onImported }: AccountImportDialogProps) {
+export function AccountImportDialog({
+  disabled,
+  onImported,
+}: AccountImportDialogProps) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [method, setMethod] = useState<ImportMethod>("menu");
   const [tokenInput, setTokenInput] = useState("");
   const [sessionInput, setSessionInput] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [pendingCpaImport, setPendingCpaImport] = useState<PendingCpaImport | null>(null);
+  const [pendingCpaImport, setPendingCpaImport] =
+    useState<PendingCpaImport | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
 
   const txtInputRef = useRef<HTMLInputElement | null>(null);
@@ -140,8 +148,10 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
 
     setIsSubmitting(true);
     try {
-      const data = await createAccounts(normalizedTokens);
-      onImported(data.items);
+      const data = await createAccounts(normalizedTokens, {
+        includeItems: false,
+      });
+      onImported();
       setOpen(false);
       resetState();
 
@@ -190,7 +200,8 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
       });
       toast.success(`已从 ${file.name} 读取 ${tokens.length} 个 Token`);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "读取 TXT 文件失败";
+      const message =
+        error instanceof Error ? error.message : "读取 TXT 文件失败";
       toast.error(message);
     }
   };
@@ -212,7 +223,8 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
 
       await submitTokens([token], "Session JSON 导入完成");
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Session JSON 解析失败";
+      const message =
+        error instanceof Error ? error.message : "Session JSON 解析失败";
       toast.error(message);
     }
   };
@@ -237,7 +249,9 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
         }),
       );
 
-      const tokens = results.map((item) => item.token).filter((item): item is string => Boolean(item));
+      const tokens = results
+        .map((item) => item.token)
+        .filter((item): item is string => Boolean(item));
       const parsedFileCount = tokens.length;
       const errorCount = results.length - parsedFileCount;
 
@@ -253,7 +267,8 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
       });
       setConfirmOpen(true);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "读取 CPA JSON 文件失败";
+      const message =
+        error instanceof Error ? error.message : "读取 CPA JSON 文件失败";
       toast.error(message);
     }
   };
@@ -273,10 +288,14 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
               <ArrowLeft className="size-4" />
               返回导入方式
             </button>
-            <span className="text-xs text-stone-400">当前识别 {tokenCount} 个 Token</span>
+            <span className="text-xs text-stone-400">
+              当前识别 {tokenCount} 个 Token
+            </span>
           </div>
           <div className="space-y-2">
-            <label className="text-sm font-medium text-stone-700">Access Token 列表</label>
+            <label className="text-sm font-medium text-stone-700">
+              Access Token 列表
+            </label>
             <Textarea
               placeholder="每行一个 Access Token..."
               value={tokenInput}
@@ -287,8 +306,12 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
           <div className="rounded-2xl border border-dashed border-stone-200 bg-stone-50 p-4">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="space-y-1">
-                <div className="text-sm font-medium text-stone-800">从 TXT 文件导入</div>
-                <div className="text-sm leading-6 text-stone-500">支持 `.txt`，文件内容也是一行一个 Token。</div>
+                <div className="text-sm font-medium text-stone-800">
+                  从 TXT 文件导入
+                </div>
+                <div className="text-sm leading-6 text-stone-500">
+                  支持 `.txt`，文件内容也是一行一个 Token。
+                </div>
               </div>
               <Button
                 type="button"
@@ -325,8 +348,7 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
             返回导入方式
           </button>
           <div className="rounded-2xl border border-stone-200 bg-stone-50 p-4 text-sm leading-6 text-stone-600">
-            打开
-            {" "}
+            打开{" "}
             <a
               href={sessionUrl}
               target="_blank"
@@ -345,7 +367,9 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
             </div>
           </div>
           <div className="space-y-2">
-            <label className="text-sm font-medium text-stone-700">Session JSON</label>
+            <label className="text-sm font-medium text-stone-700">
+              Session JSON
+            </label>
             <Textarea
               placeholder='粘贴完整 JSON，例如包含 "accessToken" 的对象...'
               value={sessionInput}
@@ -370,9 +394,12 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
           </button>
           <div className="rounded-2xl border border-dashed border-stone-200 bg-stone-50 p-5">
             <div className="space-y-2">
-              <div className="text-sm font-medium text-stone-800">多选本地 CPA JSON 文件</div>
+              <div className="text-sm font-medium text-stone-800">
+                多选本地 CPA JSON 文件
+              </div>
               <div className="text-sm leading-6 text-stone-500">
-                每个文件应为一个 JSON 对象。系统会从对象中自动提取 `access_token` 或 `accessToken`，
+                每个文件应为一个 JSON 对象。系统会从对象中自动提取
+                `access_token` 或 `accessToken`，
               </div>
             </div>
             <Button
@@ -396,7 +423,10 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
           {pendingCpaImport ? (
             <div className="rounded-2xl border border-stone-200 bg-white p-4 text-sm leading-6 text-stone-600">
               最近一次读取到 {pendingCpaImport.parsedFileCount} 个 Token
-              {pendingCpaImport.errorCount > 0 ? `，另有 ${pendingCpaImport.errorCount} 个文件未提取成功` : ""}。
+              {pendingCpaImport.errorCount > 0
+                ? `，另有 ${pendingCpaImport.errorCount} 个文件未提取成功`
+                : ""}
+              。
             </div>
           ) : null}
         </div>
@@ -499,7 +529,9 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
                 onClick={() => void handleImportTokenText()}
                 disabled={footerDisabled}
               >
-                {isSubmitting ? <LoaderCircle className="size-4 animate-spin" /> : null}
+                {isSubmitting ? (
+                  <LoaderCircle className="size-4 animate-spin" />
+                ) : null}
                 导入 Token
               </Button>
             ) : null}
@@ -509,7 +541,9 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
                 onClick={() => void handleImportSessionJson()}
                 disabled={footerDisabled}
               >
-                {isSubmitting ? <LoaderCircle className="size-4 animate-spin" /> : null}
+                {isSubmitting ? (
+                  <LoaderCircle className="size-4 animate-spin" />
+                ) : null}
                 导入 JSON
               </Button>
             ) : null}
@@ -553,10 +587,17 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
             </Button>
             <Button
               className="h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800"
-              onClick={() => void submitTokens(pendingCpaImport?.tokens ?? [], "CPA JSON 导入完成")}
+              onClick={() =>
+                void submitTokens(
+                  pendingCpaImport?.tokens ?? [],
+                  "CPA JSON 导入完成",
+                )
+              }
               disabled={isSubmitting || !pendingCpaImport}
             >
-              {isSubmitting ? <LoaderCircle className="size-4 animate-spin" /> : null}
+              {isSubmitting ? (
+                <LoaderCircle className="size-4 animate-spin" />
+              ) : null}
               确认导入
             </Button>
           </DialogFooter>

@@ -26,12 +26,38 @@ export type Account = {
   last_used_at?: string | null;
 };
 
+export type AccountSummary = {
+  total: number;
+  active: number;
+  limited: number;
+  abnormal: number;
+  disabled: number;
+  quota: number;
+  quota_display: string;
+  quota_unknown: boolean;
+  quota_unlimited: boolean;
+};
+
+type AccountListParams = {
+  page?: number;
+  pageSize?: number;
+  query?: string;
+  type?: string;
+  status?: AccountStatus | "all";
+};
+
 type AccountListResponse = {
   items: Account[];
+  total?: number;
+  page?: number;
+  page_size?: number;
+  pages?: number;
+  summary?: AccountSummary;
+  types?: string[];
 };
 
 type AccountMutationResponse = {
-  items: Account[];
+  items?: Account[];
   added?: number;
   skipped?: number;
   removed?: number;
@@ -40,14 +66,14 @@ type AccountMutationResponse = {
 };
 
 type AccountRefreshResponse = {
-  items: Account[];
+  items?: Account[];
   refreshed: number;
   errors: Array<{ access_token: string; error: string }>;
 };
 
 type AccountUpdateResponse = {
   item: Account;
-  items: Account[];
+  items?: Account[];
 };
 
 export type SettingsConfig = {
@@ -264,29 +290,81 @@ export async function login(authKey: string) {
   });
 }
 
-export async function fetchAccounts() {
-  return httpRequest<AccountListResponse>("/api/accounts");
+function buildQueryPath(
+  path: string,
+  params: Record<string, string | number | boolean | undefined>,
+) {
+  const searchParams = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value === undefined || value === "") {
+      return;
+    }
+    searchParams.set(key, String(value));
+  });
+  const query = searchParams.toString();
+  return query ? `${path}?${query}` : path;
 }
 
-export async function createAccounts(tokens: string[]) {
-  return httpRequest<AccountMutationResponse>("/api/accounts", {
-    method: "POST",
-    body: { tokens },
-  });
+export async function fetchAccounts(params: AccountListParams = {}) {
+  return httpRequest<AccountListResponse>(
+    buildQueryPath("/api/accounts", {
+      page: params.page,
+      page_size: params.pageSize,
+      query: params.query?.trim(),
+      type: params.type,
+      status: params.status,
+    }),
+  );
 }
 
-export async function deleteAccounts(tokens: string[]) {
-  return httpRequest<AccountMutationResponse>("/api/accounts", {
-    method: "DELETE",
-    body: { tokens },
-  });
+export async function fetchAccountQuotaSummary() {
+  return httpRequest<AccountSummary>("/api/accounts/quota-summary");
 }
 
-export async function refreshAccounts(accessTokens: string[]) {
-  return httpRequest<AccountRefreshResponse>("/api/accounts/refresh", {
-    method: "POST",
-    body: { access_tokens: accessTokens },
-  });
+export async function fetchAccountTokens() {
+  return httpRequest<{ tokens: string[] }>("/api/accounts/tokens");
+}
+
+export async function createAccounts(
+  tokens: string[],
+  options: { includeItems?: boolean } = {},
+) {
+  return httpRequest<AccountMutationResponse>(
+    buildQueryPath("/api/accounts", { include_items: options.includeItems }),
+    {
+      method: "POST",
+      body: { tokens },
+    },
+  );
+}
+
+export async function deleteAccounts(
+  tokens: string[],
+  options: { includeItems?: boolean } = {},
+) {
+  return httpRequest<AccountMutationResponse>(
+    buildQueryPath("/api/accounts", { include_items: options.includeItems }),
+    {
+      method: "DELETE",
+      body: { tokens },
+    },
+  );
+}
+
+export async function refreshAccounts(
+  accessTokens: string[],
+  options: { includeItems?: boolean; fullInfo?: boolean } = {},
+) {
+  return httpRequest<AccountRefreshResponse>(
+    buildQueryPath("/api/accounts/refresh", {
+      include_items: options.includeItems,
+      full_info: options.fullInfo,
+    }),
+    {
+      method: "POST",
+      body: { access_tokens: accessTokens },
+    },
+  );
 }
 
 export async function updateAccount(
@@ -296,33 +374,45 @@ export async function updateAccount(
     status?: AccountStatus;
     quota?: number;
   },
+  options: { includeItems?: boolean } = {},
 ) {
-  return httpRequest<AccountUpdateResponse>("/api/accounts/update", {
-    method: "POST",
-    body: {
-      access_token: accessToken,
-      ...updates,
-    },
-  });
-}
-
-export async function generateImage(prompt: string, model?: ImageModel, size?: string) {
-  return httpRequest<ImageResponse>(
-    "/v1/images/generations",
+  return httpRequest<AccountUpdateResponse>(
+    buildQueryPath("/api/accounts/update", {
+      include_items: options.includeItems,
+    }),
     {
       method: "POST",
       body: {
-        prompt,
-        ...(model ? { model } : {}),
-        ...(size ? { size } : {}),
-        n: 1,
-        response_format: "b64_json",
+        access_token: accessToken,
+        ...updates,
       },
     },
   );
 }
 
-export async function editImage(files: File | File[], prompt: string, model?: ImageModel, size?: string) {
+export async function generateImage(
+  prompt: string,
+  model?: ImageModel,
+  size?: string,
+) {
+  return httpRequest<ImageResponse>("/v1/images/generations", {
+    method: "POST",
+    body: {
+      prompt,
+      ...(model ? { model } : {}),
+      ...(size ? { size } : {}),
+      n: 1,
+      response_format: "b64_json",
+    },
+  });
+}
+
+export async function editImage(
+  files: File | File[],
+  prompt: string,
+  model?: ImageModel,
+  size?: string,
+) {
   const formData = new FormData();
   const uploadFiles = Array.isArray(files) ? files : [files];
 
@@ -338,13 +428,10 @@ export async function editImage(files: File | File[], prompt: string, model?: Im
   }
   formData.append("n", "1");
 
-  return httpRequest<ImageResponse>(
-    "/v1/images/edits",
-    {
-      method: "POST",
-      body: formData,
-    },
-  );
+  return httpRequest<ImageResponse>("/v1/images/edits", {
+    method: "POST",
+    body: formData,
+  });
 }
 
 export async function createImageGenerationTask(
@@ -409,7 +496,9 @@ export async function fetchImageTasks(ids: string[]) {
   if (ids.length > 0) {
     params.set("ids", ids.join(","));
   }
-  return httpRequest<ImageTaskListResponse>(`/api/image-tasks${params.toString() ? `?${params.toString()}` : ""}`);
+  return httpRequest<ImageTaskListResponse>(
+    `/api/image-tasks${params.toString() ? `?${params.toString()}` : ""}`,
+  );
 }
 
 function parseSseBlocks(buffer: string) {
@@ -461,15 +550,18 @@ export async function streamImageTaskEvents(
 ) {
   const authKey = await getStoredAuthKey();
   const params = new URLSearchParams({ conversation_id: conversationId });
-  const response = await fetch(`${request.defaults.baseURL}/api/image-tasks/events?${params.toString()}`, {
-    method: "GET",
-    headers: {
-      Accept: "text/event-stream",
-      ...(authKey ? { Authorization: `Bearer ${authKey}` } : {}),
+  const response = await fetch(
+    `${request.defaults.baseURL}/api/image-tasks/events?${params.toString()}`,
+    {
+      method: "GET",
+      headers: {
+        Accept: "text/event-stream",
+        ...(authKey ? { Authorization: `Bearer ${authKey}` } : {}),
+      },
+      cache: "no-store",
+      signal: options.signal,
     },
-    cache: "no-store",
-    signal: options.signal,
-  });
+  );
 
   if (response.status === 401) {
     await clearStoredAuthSession();
@@ -497,7 +589,10 @@ export async function streamImageTaskEvents(
         if (!event) {
           continue;
         }
-        const payload = JSON.parse(event.data) as Omit<ImageTaskStreamEvent, "event">;
+        const payload = JSON.parse(event.data) as Omit<
+          ImageTaskStreamEvent,
+          "event"
+        >;
         await options.onEvent({ event: event.event, ...payload });
       }
     }
@@ -518,18 +613,27 @@ export async function updateSettingsConfig(settings: SettingsConfig) {
 }
 
 export async function testBackupConnection() {
-  return httpRequest<{ result: { ok: boolean; status: number } }>("/api/backup/test", {
-    method: "POST",
-    body: {},
-  });
+  return httpRequest<{ result: { ok: boolean; status: number } }>(
+    "/api/backup/test",
+    {
+      method: "POST",
+      body: {},
+    },
+  );
 }
 
 export async function fetchBackups() {
-  return httpRequest<{ items: BackupItem[]; state: BackupState; settings: BackupSettings }>("/api/backups");
+  return httpRequest<{
+    items: BackupItem[];
+    state: BackupState;
+    settings: BackupSettings;
+  }>("/api/backups");
 }
 
 export async function runBackupNow() {
-  return httpRequest<{ result: { key: string; size: number; encrypted: boolean } }>("/api/backups/run", {
+  return httpRequest<{
+    result: { key: string; size: number; encrypted: boolean };
+  }>("/api/backups/run", {
     method: "POST",
     body: {},
   });
@@ -545,7 +649,9 @@ export async function deleteBackup(key: string) {
 export async function fetchBackupDetail(key: string) {
   const params = new URLSearchParams();
   params.set("key", key);
-  return httpRequest<{ item: BackupDetail }>(`/api/backups/detail?${params.toString()}`);
+  return httpRequest<{ item: BackupDetail }>(
+    `/api/backups/detail?${params.toString()}`,
+  );
 }
 
 export function getBackupDownloadUrl(key: string) {
@@ -554,21 +660,37 @@ export function getBackupDownloadUrl(key: string) {
   return `/api/backups/download?${params.toString()}`;
 }
 
-export async function fetchManagedImages(filters: { start_date?: string; end_date?: string }) {
+export async function fetchManagedImages(filters: {
+  start_date?: string;
+  end_date?: string;
+}) {
   const params = new URLSearchParams();
   if (filters.start_date) params.set("start_date", filters.start_date);
   if (filters.end_date) params.set("end_date", filters.end_date);
-  return httpRequest<{ items: ManagedImage[]; groups: Array<{ date: string; items: ManagedImage[] }> }>(
-    `/api/images${params.toString() ? `?${params.toString()}` : ""}`,
-  );
+  return httpRequest<{
+    items: ManagedImage[];
+    groups: Array<{ date: string; items: ManagedImage[] }>;
+  }>(`/api/images${params.toString() ? `?${params.toString()}` : ""}`);
 }
 
-export async function deleteManagedImages(body: { paths?: string[]; start_date?: string; end_date?: string; all_matching?: boolean }) {
-  return httpRequest<{ removed: number }>("/api/images/delete", { method: "POST", body });
+export async function deleteManagedImages(body: {
+  paths?: string[];
+  start_date?: string;
+  end_date?: string;
+  all_matching?: boolean;
+}) {
+  return httpRequest<{ removed: number }>("/api/images/delete", {
+    method: "POST",
+    body,
+  });
 }
 
 export async function downloadImages(paths: string[]) {
-  const response = await request.post("/api/images/download", { paths }, { responseType: "blob" });
+  const response = await request.post(
+    "/api/images/download",
+    { paths },
+    { responseType: "blob" },
+  );
   const blob = response.data as Blob;
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -581,7 +703,9 @@ export async function downloadImages(paths: string[]) {
 }
 
 export async function downloadSingleImage(path: string) {
-  const response = await request.get(`/api/images/download/${path}`, { responseType: "blob" });
+  const response = await request.get(`/api/images/download/${path}`, {
+    responseType: "blob",
+  });
   const blob = response.data as Blob;
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -605,17 +729,26 @@ export async function setImageTags(path: string, tags: string[]) {
 }
 
 export async function deleteImageTag(tag: string) {
-  return httpRequest<{ ok: boolean; removed_from: number }>(`/api/images/tags/${encodeURIComponent(tag)}`, {
-    method: "DELETE",
-  });
+  return httpRequest<{ ok: boolean; removed_from: number }>(
+    `/api/images/tags/${encodeURIComponent(tag)}`,
+    {
+      method: "DELETE",
+    },
+  );
 }
 
-export async function fetchSystemLogs(filters: { type?: string; start_date?: string; end_date?: string }) {
+export async function fetchSystemLogs(filters: {
+  type?: string;
+  start_date?: string;
+  end_date?: string;
+}) {
   const params = new URLSearchParams();
   if (filters.type) params.set("type", filters.type);
   if (filters.start_date) params.set("start_date", filters.start_date);
   if (filters.end_date) params.set("end_date", filters.end_date);
-  return httpRequest<{ items: SystemLog[] }>(`/api/logs${params.toString() ? `?${params.toString()}` : ""}`);
+  return httpRequest<{ items: SystemLog[] }>(
+    `/api/logs${params.toString() ? `?${params.toString()}` : ""}`,
+  );
 }
 
 export async function deleteSystemLogs(ids: string[]) {
@@ -630,17 +763,26 @@ export async function fetchUserKeys() {
 }
 
 export async function createUserKey(name: string) {
-  return httpRequest<{ item: UserKey; key: string; items: UserKey[] }>("/api/auth/users", {
-    method: "POST",
-    body: { name },
-  });
+  return httpRequest<{ item: UserKey; key: string; items: UserKey[] }>(
+    "/api/auth/users",
+    {
+      method: "POST",
+      body: { name },
+    },
+  );
 }
 
-export async function updateUserKey(keyId: string, updates: { enabled?: boolean; name?: string; key?: string }) {
-  return httpRequest<{ item: UserKey; items: UserKey[] }>(`/api/auth/users/${keyId}`, {
-    method: "POST",
-    body: updates,
-  });
+export async function updateUserKey(
+  keyId: string,
+  updates: { enabled?: boolean; name?: string; key?: string },
+) {
+  return httpRequest<{ item: UserKey; items: UserKey[] }>(
+    `/api/auth/users/${keyId}`,
+    {
+      method: "POST",
+      body: updates,
+    },
+  );
 }
 
 export async function deleteUserKey(keyId: string) {
@@ -661,15 +803,21 @@ export async function updateRegisterConfig(updates: Partial<RegisterConfig>) {
 }
 
 export async function startRegister() {
-  return httpRequest<{ register: RegisterConfig }>("/api/register/start", { method: "POST" });
+  return httpRequest<{ register: RegisterConfig }>("/api/register/start", {
+    method: "POST",
+  });
 }
 
 export async function stopRegister() {
-  return httpRequest<{ register: RegisterConfig }>("/api/register/stop", { method: "POST" });
+  return httpRequest<{ register: RegisterConfig }>("/api/register/stop", {
+    method: "POST",
+  });
 }
 
 export async function resetRegister() {
-  return httpRequest<{ register: RegisterConfig }>("/api/register/reset", { method: "POST" });
+  return httpRequest<{ register: RegisterConfig }>("/api/register/reset", {
+    method: "POST",
+  });
 }
 
 // ── CPA (CLIProxyAPI) ──────────────────────────────────────────────
@@ -704,7 +852,11 @@ export async function fetchCPAPools() {
   return httpRequest<{ pools: CPAPool[] }>("/api/cpa/pools");
 }
 
-export async function createCPAPool(pool: { name: string; base_url: string; secret_key: string }) {
+export async function createCPAPool(pool: {
+  name: string;
+  base_url: string;
+  secret_key: string;
+}) {
   return httpRequest<{ pool: CPAPool; pools: CPAPool[] }>("/api/cpa/pools", {
     method: "POST",
     body: pool,
@@ -715,10 +867,13 @@ export async function updateCPAPool(
   poolId: string,
   updates: { name?: string; base_url?: string; secret_key?: string },
 ) {
-  return httpRequest<{ pool: CPAPool; pools: CPAPool[] }>(`/api/cpa/pools/${poolId}`, {
-    method: "POST",
-    body: updates,
-  });
+  return httpRequest<{ pool: CPAPool; pools: CPAPool[] }>(
+    `/api/cpa/pools/${poolId}`,
+    {
+      method: "POST",
+      body: updates,
+    },
+  );
 }
 
 export async function deleteCPAPool(poolId: string) {
@@ -728,18 +883,25 @@ export async function deleteCPAPool(poolId: string) {
 }
 
 export async function fetchCPAPoolFiles(poolId: string) {
-  return httpRequest<{ pool_id: string; files: CPARemoteFile[] }>(`/api/cpa/pools/${poolId}/files`);
+  return httpRequest<{ pool_id: string; files: CPARemoteFile[] }>(
+    `/api/cpa/pools/${poolId}/files`,
+  );
 }
 
 export async function startCPAImport(poolId: string, names: string[]) {
-  return httpRequest<{ import_job: CPAImportJob | null }>(`/api/cpa/pools/${poolId}/import`, {
-    method: "POST",
-    body: { names },
-  });
+  return httpRequest<{ import_job: CPAImportJob | null }>(
+    `/api/cpa/pools/${poolId}/import`,
+    {
+      method: "POST",
+      body: { names },
+    },
+  );
 }
 
 export async function fetchCPAPoolImportJob(poolId: string) {
-  return httpRequest<{ import_job: CPAImportJob | null }>(`/api/cpa/pools/${poolId}/import`);
+  return httpRequest<{ import_job: CPAImportJob | null }>(
+    `/api/cpa/pools/${poolId}/import`,
+  );
 }
 
 // ── Sub2API ────────────────────────────────────────────────────────
@@ -786,10 +948,13 @@ export async function createSub2APIServer(server: {
   api_key: string;
   group_id: string;
 }) {
-  return httpRequest<{ server: Sub2APIServer; servers: Sub2APIServer[] }>("/api/sub2api/servers", {
-    method: "POST",
-    body: server,
-  });
+  return httpRequest<{ server: Sub2APIServer; servers: Sub2APIServer[] }>(
+    "/api/sub2api/servers",
+    {
+      method: "POST",
+      body: server,
+    },
+  );
 }
 
 export async function updateSub2APIServer(
@@ -803,10 +968,13 @@ export async function updateSub2APIServer(
     group_id?: string;
   },
 ) {
-  return httpRequest<{ server: Sub2APIServer; servers: Sub2APIServer[] }>(`/api/sub2api/servers/${serverId}`, {
-    method: "POST",
-    body: updates,
-  });
+  return httpRequest<{ server: Sub2APIServer; servers: Sub2APIServer[] }>(
+    `/api/sub2api/servers/${serverId}`,
+    {
+      method: "POST",
+      body: updates,
+    },
+  );
 }
 
 export async function fetchSub2APIServerGroups(serverId: string) {
@@ -816,9 +984,12 @@ export async function fetchSub2APIServerGroups(serverId: string) {
 }
 
 export async function deleteSub2APIServer(serverId: string) {
-  return httpRequest<{ servers: Sub2APIServer[] }>(`/api/sub2api/servers/${serverId}`, {
-    method: "DELETE",
-  });
+  return httpRequest<{ servers: Sub2APIServer[] }>(
+    `/api/sub2api/servers/${serverId}`,
+    {
+      method: "DELETE",
+    },
+  );
 }
 
 export async function fetchSub2APIServerAccounts(serverId: string) {
@@ -827,15 +998,23 @@ export async function fetchSub2APIServerAccounts(serverId: string) {
   );
 }
 
-export async function startSub2APIImport(serverId: string, accountIds: string[]) {
-  return httpRequest<{ import_job: CPAImportJob | null }>(`/api/sub2api/servers/${serverId}/import`, {
-    method: "POST",
-    body: { account_ids: accountIds },
-  });
+export async function startSub2APIImport(
+  serverId: string,
+  accountIds: string[],
+) {
+  return httpRequest<{ import_job: CPAImportJob | null }>(
+    `/api/sub2api/servers/${serverId}/import`,
+    {
+      method: "POST",
+      body: { account_ids: accountIds },
+    },
+  );
 }
 
 export async function fetchSub2APIImportJob(serverId: string) {
-  return httpRequest<{ import_job: CPAImportJob | null }>(`/api/sub2api/servers/${serverId}/import`);
+  return httpRequest<{ import_job: CPAImportJob | null }>(
+    `/api/sub2api/servers/${serverId}/import`,
+  );
 }
 
 // ── Upstream proxy ────────────────────────────────────────────────
@@ -856,7 +1035,10 @@ export async function fetchProxy() {
   return httpRequest<{ proxy: ProxySettings }>("/api/proxy");
 }
 
-export async function updateProxy(updates: { enabled?: boolean; url?: string }) {
+export async function updateProxy(updates: {
+  enabled?: boolean;
+  url?: string;
+}) {
   return httpRequest<{ proxy: ProxySettings }>("/api/proxy", {
     method: "POST",
     body: updates,
