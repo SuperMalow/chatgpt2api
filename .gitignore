@@ -32,3 +32,5 @@ git_cache/
 # test
 tests/
 test/
+!web/tests/
+!web/tests/**

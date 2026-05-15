@@ -7,6 +7,8 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { ImageConversation, ImageTurnStatus, StoredImage, StoredReferenceImage } from "@/store/image-conversations";
 
+import { getImageTurnAspectClass, getImageTurnAspectRatio } from "./image-results-layout";
+
 export type ImageLightboxItem = {
   id: string;
   src: string;
@@ -69,16 +71,6 @@ export function ImageResults({
 }: ImageResultsProps) {
   const [imageDimensions, setImageDimensions] = useState<Record<string, string>>({});
   const [imageLoadFailed, setImageLoadFailed] = useState<Record<string, boolean>>({});
-  const turnAspectClass = (size: string, { mobileSquare = false }: { mobileSquare?: boolean } = {}) =>
-    cn(
-      mobileSquare && "aspect-square",
-      size === "1:1" && `${mobileSquare ? "sm:" : ""}aspect-square`,
-      size === "16:9" && `${mobileSquare ? "sm:" : ""}aspect-video`,
-      size === "9:16" && `${mobileSquare ? "sm:" : ""}aspect-[9/16]`,
-      size === "4:3" && `${mobileSquare ? "sm:" : ""}aspect-[4/3]`,
-      size === "3:4" && `${mobileSquare ? "sm:" : ""}aspect-[3/4]`,
-      !["1:1", "16:9", "9:16", "4:3", "3:4"].includes(size) && `${mobileSquare ? "sm:" : ""}aspect-square`,
-    );
 
   const updateImageDimensions = (id: string, width: number, height: number) => {
     const dimensions = formatImageDimensions(width, height);
@@ -225,6 +217,7 @@ export function ImageResults({
 
                   <div className="grid grid-cols-3 gap-2 sm:block sm:columns-2 sm:gap-4 sm:space-y-4 xl:columns-3">
                     {turn.images.map((image, index) => {
+                      const turnAspectStyle = { aspectRatio: getImageTurnAspectRatio(turn.size) };
                       const imageSrc = image.status === "success" ? getStoredImageSrc(image) : "";
                       const showImageLoadFallback = image.status === "success" && (!!imageSrc && imageLoadFailed[image.id]);
                       if (showImageLoadFallback) {
@@ -233,7 +226,7 @@ export function ImageResults({
                             key={image.id}
                             className={cn(
                               "break-inside-avoid overflow-hidden rounded-xl border border-stone-200/80 bg-stone-100/80",
-                              turnAspectClass(turn.size, { mobileSquare: true }),
+                              getImageTurnAspectClass(turn.size, { mobileSquare: true }),
                             )}
                           >
                             <div className="relative h-full w-full bg-[linear-gradient(110deg,rgba(255,255,255,0.18),rgba(255,255,255,0.5),rgba(255,255,255,0.18))] bg-[length:200%_100%] animate-[shimmer_2.4s_ease-in-out_infinite]">
@@ -329,7 +322,7 @@ export function ImageResults({
                             key={image.id}
                             className={cn(
                               "break-inside-avoid overflow-hidden rounded-xl border border-stone-200/80 bg-stone-100/80",
-                              turnAspectClass(turn.size, { mobileSquare: true }),
+                              getImageTurnAspectClass(turn.size, { mobileSquare: true }),
                             )}
                           >
                             <div className="relative h-full w-full bg-[linear-gradient(110deg,rgba(255,255,255,0.18),rgba(255,255,255,0.5),rgba(255,255,255,0.18))] bg-[length:200%_100%] animate-[shimmer_2.4s_ease-in-out_infinite]">
@@ -362,8 +355,9 @@ export function ImageResults({
                           key={image.id}
                           className={cn(
                             "break-inside-avoid overflow-hidden rounded-xl border border-stone-200/80 bg-stone-100/80",
-                            turnAspectClass(turn.size),
+                            getImageTurnAspectClass(turn.size),
                           )}
+                          style={turnAspectStyle}
                         >
                           <div className="relative h-full w-full bg-[linear-gradient(110deg,rgba(255,255,255,0.16),rgba(255,255,255,0.5),rgba(255,255,255,0.16))] bg-[length:200%_100%] animate-[shimmer_2.2s_ease-in-out_infinite]">
                             <div className="absolute inset-0 bg-stone-100/88" />
