@@ -46,5 +46,5 @@
       "images": false
     }
   },
-  "image_account_concurrency": 3
+  "image_account_concurrency": 1
 }

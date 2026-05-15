@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
@@ -142,45 +142,115 @@ def create_router() -> APIRouter:
         return {"items": auth_service.list_keys(role="user")}
 
     @router.get("/api/accounts")
-    async def get_accounts(authorization: str | None = Header(default=None)):
+    async def get_accounts(
+        authorization: str | None = Header(default=None),
+        page: int | None = Query(default=None, ge=1),
+        page_size: int | None = Query(default=None, ge=1, le=200),
+        query: str = "",
+        type_filter: str = Query(default="all", alias="type"),
+        status: str = "all",
+    ):
         require_admin(authorization)
-        return {"items": account_service.list_accounts()}
+        is_paginated = (
+            page is not None
+            or page_size is not None
+            or bool(str(query or "").strip())
+            or str(type_filter or "all") != "all"
+            or str(status or "all") != "all"
+        )
+        if is_paginated:
+            return account_service.list_accounts_page(
+                page=page or 1,
+                page_size=page_size or 20,
+                query=query,
+                account_type=type_filter,
+                status=status,
+            )
+        items = account_service.list_accounts()
+        return {
+            "items": items,
+            "total": len(items),
+            "page": 1,
+            "page_size": len(items) or 1,
+            "pages": 1,
+            "summary": account_service.get_account_summary(),
+            "types": sorted({str(item.get("type") or "Free") for item in items}),
+        }
+
+    @router.get("/api/accounts/quota-summary")
+    async def get_account_quota_summary(authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        return account_service.get_account_quota_summary()
+
+    @router.get("/api/accounts/tokens")
+    async def get_account_tokens(authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        return {"tokens": account_service.list_account_tokens()}
 
     @router.post("/api/accounts")
-    async def create_accounts(body: AccountCreateRequest, authorization: str | None = Header(default=None)):
+    async def create_accounts(
+        body: AccountCreateRequest,
+        authorization: str | None = Header(default=None),
+        include_items: bool = Query(default=True),
+    ):
         require_admin(authorization)
         tokens = [str(token or "").strip() for token in body.tokens if str(token or "").strip()]
         if not tokens:
             raise HTTPException(status_code=400, detail={"error": "tokens is required"})
-        result = account_service.add_accounts(tokens)
-        refresh_result = account_service.refresh_accounts(tokens)
-        return {
+        result = account_service.add_accounts(tokens, include_items=False)
+        refresh_result = await run_in_threadpool(
+            account_service.refresh_accounts,
+            tokens,
+            include_items=include_items,
+            quota_only_if_possible=False,
+        )
+        response = {
             **result,
             "refreshed": refresh_result.get("refreshed", 0),
             "errors": refresh_result.get("errors", []),
-            "items": refresh_result.get("items", result.get("items", [])),
         }
+        if include_items:
+            response["items"] = refresh_result.get("items", [])
+        return response
 
     @router.delete("/api/accounts")
-    async def delete_accounts(body: AccountDeleteRequest, authorization: str | None = Header(default=None)):
+    async def delete_accounts(
+        body: AccountDeleteRequest,
+        authorization: str | None = Header(default=None),
+        include_items: bool = Query(default=True),
+    ):
         require_admin(authorization)
         tokens = [str(token or "").strip() for token in body.tokens if str(token or "").strip()]
         if not tokens:
             raise HTTPException(status_code=400, detail={"error": "tokens is required"})
-        return account_service.delete_accounts(tokens)
+        return account_service.delete_accounts(tokens, include_items=include_items)
 
     @router.post("/api/accounts/refresh")
-    async def refresh_accounts(body: AccountRefreshRequest, authorization: str | None = Header(default=None)):
+    async def refresh_accounts(
+        body: AccountRefreshRequest,
+        authorization: str | None = Header(default=None),
+        include_items: bool = Query(default=True),
+        full_info: bool = Query(default=False),
+    ):
         require_admin(authorization)
         access_tokens = [str(token or "").strip() for token in body.access_tokens if str(token or "").strip()]
         if not access_tokens:
             access_tokens = account_service.list_tokens()
         if not access_tokens:
             raise HTTPException(status_code=400, detail={"error": "access_tokens is required"})
-        return account_service.refresh_accounts(access_tokens)
+        return await run_in_threadpool(
+            account_service.refresh_accounts,
+            access_tokens,
+            include_items=include_items,
+            quota_only_if_possible=not full_info,
+        )
 
     @router.post("/api/accounts/update")
-    async def update_account(body: AccountUpdateRequest, authorization: str | None = Header(default=None)):
+    async def update_account(
+        body: AccountUpdateRequest,
+        authorization: str | None = Header(default=None),
+        include_items: bool = Query(default=True),
+    ):
         require_admin(authorization)
         access_token = str(body.access_token or "").strip()
         if not access_token:
@@ -191,7 +261,10 @@ def create_router() -> APIRouter:
         account = account_service.update_account(access_token, updates)
         if account is None:
             raise HTTPException(status_code=404, detail={"error": "account not found"})
-        return {"item": account, "items": account_service.list_accounts()}
+        response = {"item": account}
+        if include_items:
+            response["items"] = account_service.list_accounts()
+        return response
 
     @router.get("/api/cpa/pools")
     async def list_cpa_pools(authorization: str | None = Header(default=None)):

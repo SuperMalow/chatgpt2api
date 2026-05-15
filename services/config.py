@@ -190,9 +190,9 @@ class ConfigStore:
     @property
     def image_account_concurrency(self) -> int:
         try:
-            return max(1, int(self.data.get("image_account_concurrency", 3)))
+            return max(1, int(self.data.get("image_account_concurrency", 1)))
         except (TypeError, ValueError):
-            return 3
+            return 1
 
     @property
     def image_backend_default(self) -> str:
