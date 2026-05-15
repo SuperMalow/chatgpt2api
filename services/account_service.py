@@ -15,7 +15,7 @@ from services.storage.base import StorageBackend
 from utils.helper import anonymize_token
 
 
-MAX_ACCOUNT_PAGE_SIZE = 200
+MAX_ACCOUNT_PAGE_SIZE = 50
 
 
 def _positive_int_env(name: str, default: int, minimum: int = 1, maximum: int | None = None) -> int:

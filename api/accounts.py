@@ -23,6 +23,9 @@ from services.sub2api_service import (
 )
 
 
+MAX_ACCOUNT_REFRESH_BATCH_SIZE = 50
+MAX_ACCOUNT_PAGE_SIZE = 50
+
 
 class UserKeyCreateRequest(BaseModel):
     name: str = ""
@@ -145,7 +148,7 @@ def create_router() -> APIRouter:
     async def get_accounts(
         authorization: str | None = Header(default=None),
         page: int | None = Query(default=None, ge=1),
-        page_size: int | None = Query(default=None, ge=1, le=200),
+        page_size: int | None = Query(default=None, ge=1, le=MAX_ACCOUNT_PAGE_SIZE),
         query: str = "",
         type_filter: str = Query(default="all", alias="type"),
         status: str = "all",
@@ -235,9 +238,9 @@ def create_router() -> APIRouter:
         require_admin(authorization)
         access_tokens = [str(token or "").strip() for token in body.access_tokens if str(token or "").strip()]
         if not access_tokens:
-            access_tokens = account_service.list_tokens()
-        if not access_tokens:
             raise HTTPException(status_code=400, detail={"error": "access_tokens is required"})
+        if len(access_tokens) > MAX_ACCOUNT_REFRESH_BATCH_SIZE:
+            raise HTTPException(status_code=400, detail={"error": f"一次最多只能刷新 {MAX_ACCOUNT_REFRESH_BATCH_SIZE} 个账号"})
         return await run_in_threadpool(
             account_service.refresh_accounts,
             access_tokens,

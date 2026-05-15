@@ -203,6 +203,8 @@ function displayAccountType(account: Account) {
   return account.type || "Free";
 }
 
+const maxRefreshBatchSize = 50;
+
 function AccountsPageContent() {
   const loadSeqRef = useRef(0);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -304,6 +306,11 @@ function AccountsPageContent() {
       .map((item) => item.access_token);
   }, [accounts, selectedIds]);
 
+  const currentPageTokens = useMemo(
+    () => accounts.map((item) => item.access_token),
+    [accounts],
+  );
+
   const abnormalTokens = useMemo(() => {
     return accounts
       .filter((item) => item.status === "异常")
@@ -346,16 +353,20 @@ function AccountsPageContent() {
 
   const handleRefreshAccounts = async (
     accessTokens: string[],
-    options: { all?: boolean; fullInfo?: boolean } = {},
+    options: { fullInfo?: boolean } = {},
   ) => {
-    if (accessTokens.length === 0 && !options.all) {
+    if (accessTokens.length === 0) {
       toast.error("没有需要刷新的账户");
+      return;
+    }
+    if (accessTokens.length > maxRefreshBatchSize) {
+      toast.error(`一次最多只能刷新 ${maxRefreshBatchSize} 个账户`);
       return;
     }
 
     setIsRefreshing(true);
     try {
-      const data = await refreshAccounts(options.all ? [] : accessTokens, {
+      const data = await refreshAccounts(accessTokens, {
         includeItems: false,
         fullInfo: options.fullInfo,
       });
@@ -465,30 +476,36 @@ function AccountsPageContent() {
           <Button
             variant="outline"
             className="h-10 rounded-xl border-stone-200 bg-white/80 px-4 text-stone-700 hover:bg-white"
-            onClick={() => void handleRefreshAccounts([], { all: true })}
+            onClick={() => void handleRefreshAccounts(currentPageTokens)}
             disabled={
-              isLoading || isRefreshing || isDeleting || summary.total === 0
+              isLoading ||
+              isRefreshing ||
+              isDeleting ||
+              currentPageTokens.length === 0
             }
           >
             <RefreshCw
               className={cn("size-4", isRefreshing ? "animate-spin" : "")}
             />
-            快速刷新全部额度
+            快速刷新当前页额度
           </Button>
           <Button
             variant="outline"
             className="h-10 rounded-xl border-stone-200 bg-white/80 px-4 text-stone-700 hover:bg-white"
             onClick={() =>
-              void handleRefreshAccounts([], { all: true, fullInfo: true })
+              void handleRefreshAccounts(currentPageTokens, { fullInfo: true })
             }
             disabled={
-              isLoading || isRefreshing || isDeleting || summary.total === 0
+              isLoading ||
+              isRefreshing ||
+              isDeleting ||
+              currentPageTokens.length === 0
             }
           >
             <RefreshCw
               className={cn("size-4", isRefreshing ? "animate-spin" : "")}
             />
-            完整刷新全部资料
+            完整刷新当前页资料
           </Button>
           <AccountImportDialog
             disabled={isLoading || isRefreshing || isDeleting}
@@ -952,7 +969,6 @@ function AccountsPageContent() {
                     <SelectItem value="10">10 / 页</SelectItem>
                     <SelectItem value="20">20 / 页</SelectItem>
                     <SelectItem value="50">50 / 页</SelectItem>
-                    <SelectItem value="100">100 / 页</SelectItem>
                   </SelectContent>
                 </Select>
                 <Button
