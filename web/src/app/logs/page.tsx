@@ -18,6 +18,7 @@ import { deleteSystemLogs, fetchSystemLogs, type SystemLog } from "@/lib/api";
 import { useAuthGuard } from "@/lib/use-auth-guard";
 
 const LogType = {
+  All: "all",
   Call: "call",
   Account: "account",
 } as const;
@@ -59,7 +60,7 @@ function formatStructuredDetail(value: unknown) {
 
 function LogsContent() {
   const [items, setItems] = useState<SystemLog[]>([]);
-  const [type, setType] = useState<string>(LogType.Call);
+  const [type, setType] = useState<string>(LogType.All);
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [detailLog, setDetailLog] = useState<SystemLog | null>(null);
@@ -76,7 +77,7 @@ function LogsContent() {
   const detailEntries = Object.entries(detailLog?.detail || {});
   const scalarDetailEntries = detailEntries.filter(([, value]) => !isStructuredDetailValue(value));
   const structuredDetailEntries = detailEntries.filter(([key, value]) => key !== "urls" && isStructuredDetailValue(value));
-  const isCallLog = type === LogType.Call;
+  const showCallColumns = type !== LogType.Account;
   const pageSize = 10;
   const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
   const safePage = Math.min(page, pageCount);
@@ -88,7 +89,7 @@ function LogsContent() {
   const loadLogs = async () => {
     setIsLoading(true);
     try {
-      const data = await fetchSystemLogs({ type, start_date: startDate, end_date: endDate });
+      const data = await fetchSystemLogs({ type: type === LogType.All ? undefined : type, start_date: startDate, end_date: endDate });
       setItems(data.items);
       setSelectedIds((current) => current.filter((id) => data.items.some((item) => item.id === id)));
       setPage(1);
@@ -155,6 +156,7 @@ function LogsContent() {
           <Select value={type} onValueChange={setType}>
             <SelectTrigger className="h-10 w-[150px] rounded-xl border-stone-200 bg-white"><SelectValue /></SelectTrigger>
             <SelectContent>
+              <SelectItem value={LogType.All}>全部日志</SelectItem>
               <SelectItem value={LogType.Call}>调用日志</SelectItem>
               <SelectItem value={LogType.Account}>账号管理日志</SelectItem>
             </SelectContent>
@@ -206,10 +208,10 @@ function LogsContent() {
                   <TableHead className="w-12"></TableHead>
                   <TableHead>时间</TableHead>
                   <TableHead>类型</TableHead>
-                  {isCallLog ? <TableHead>令牌名称</TableHead> : null}
-                  {isCallLog ? <TableHead>调用耗时</TableHead> : null}
-                  {isCallLog ? <TableHead>状态</TableHead> : null}
-                  {isCallLog ? <TableHead className="w-36">图片</TableHead> : null}
+                  {showCallColumns ? <TableHead>令牌名称</TableHead> : null}
+                  {showCallColumns ? <TableHead>调用耗时</TableHead> : null}
+                  {showCallColumns ? <TableHead>状态</TableHead> : null}
+                  {showCallColumns ? <TableHead className="w-36">图片</TableHead> : null}
                   <TableHead>简述</TableHead>
                   <TableHead className="w-40">操作</TableHead>
                 </TableRow>
@@ -217,6 +219,7 @@ function LogsContent() {
               <TableBody>
                 {currentRows.map((item) => {
                   const urls = getUrls(item);
+                  const isRowCallLog = item.type === LogType.Call;
                   return (
                     <TableRow key={item.id} className="text-stone-600">
                       <TableCell>
@@ -224,18 +227,20 @@ function LogsContent() {
                       </TableCell>
                       <TableCell className="whitespace-nowrap">{item.time}</TableCell>
                       <TableCell><Badge variant="secondary" className="rounded-md">{typeLabels[item.type] || item.type}</Badge></TableCell>
-                      {isCallLog ? <TableCell>{getDetailText(item, "key_name")}</TableCell> : null}
-                      {isCallLog ? <TableCell>{formatDuration(item)}</TableCell> : null}
-                      {isCallLog ? (
+                      {showCallColumns ? <TableCell>{isRowCallLog ? getDetailText(item, "key_name") : "-"}</TableCell> : null}
+                      {showCallColumns ? <TableCell>{isRowCallLog ? formatDuration(item) : "-"}</TableCell> : null}
+                      {showCallColumns ? (
                         <TableCell>
-                          <Badge variant={item.detail?.status === "failed" ? "danger" : "success"} className="rounded-md">
-                            {getStatus(item)}
-                          </Badge>
+                          {isRowCallLog ? (
+                            <Badge variant={item.detail?.status === "failed" ? "danger" : "success"} className="rounded-md">
+                              {getStatus(item)}
+                            </Badge>
+                          ) : "-"}
                         </TableCell>
                       ) : null}
-                      {isCallLog ? (
+                      {showCallColumns ? (
                         <TableCell>
-                          {urls.length ? (
+                          {isRowCallLog && urls.length ? (
                             <div className="flex items-center gap-1.5">
                               {urls.slice(0, 3).map((url, imageIndex) => (
                                 <button

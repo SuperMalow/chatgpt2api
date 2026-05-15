@@ -62,6 +62,22 @@ class AccountService:
         self.storage.save_accounts(list(self._accounts.values()))
 
     @staticmethod
+    def _build_account_changes(before: dict | None, after: dict | None, fields: set[str]) -> dict[str, dict[str, Any]]:
+        if after is None:
+            return {}
+        source = before or {}
+        changes: dict[str, dict[str, Any]] = {}
+        for field in sorted(fields):
+            before_value = source.get(field)
+            after_value = after.get(field)
+            if before_value != after_value:
+                changes[field] = {
+                    "before": before_value,
+                    "after": after_value,
+                }
+        return changes
+
+    @staticmethod
     def _is_image_account_available(account: dict) -> bool:
         if not isinstance(account, dict):
             return False
@@ -401,12 +417,18 @@ class AccountService:
         if not access_token:
             return None
         with self._lock:
+            current = dict(self._accounts.get(access_token) or {})
             account, changed = self._apply_account_update_locked(access_token, updates)
             if changed:
                 self._save_accounts()
             if account is not None:
                 log_service.add(LOG_TYPE_ACCOUNT, "更新账号",
-                                {"token": anonymize_token(access_token), "status": account.get("status")})
+                                {
+                                    "action": "update_account",
+                                    "token": anonymize_token(access_token),
+                                    "status": account.get("status"),
+                                    "changes": self._build_account_changes(current, account, set(updates)),
+                                })
             return account
 
     def _apply_account_update_locked(self, access_token: str, updates: dict) -> tuple[dict | None, bool]:
@@ -543,17 +565,20 @@ class AccountService:
                     from services.openai_backend_api import InvalidAccessTokenError
                     if isinstance(exc, InvalidAccessTokenError):
                         invalid_tokens.append(token)
-                    errors.append({"token": anonymize_token(token), "error": str(exc)})
+                    token_ref = anonymize_token(token)
+                    errors.append({"token": token_ref, "error": str(exc).replace(token, token_ref)})
                     continue
                 updates.append((token, result))
 
         changed = False
+        refreshed_tokens: list[str] = []
         with self._lock:
             for token, result in updates:
                 account, did_change = self._apply_account_update_locked(token, result)
                 changed = changed or did_change
                 if account is not None:
                     refreshed += 1
+                    refreshed_tokens.append(anonymize_token(token))
             for token in invalid_tokens:
                 changed = self._apply_invalid_token_locked(token, "refresh_accounts") or changed
             if changed:
@@ -570,6 +595,10 @@ class AccountService:
                     "refreshed": refreshed,
                     "errors": len(errors),
                     "workers": max_workers,
+                    "action": "refresh_accounts",
+                    "requested_tokens": [anonymize_token(token) for token in access_tokens],
+                    "refreshed_tokens": refreshed_tokens,
+                    "failed_items": errors,
                 },
             )
 
