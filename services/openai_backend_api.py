@@ -14,7 +14,7 @@ from PIL import Image
 from services.account_service import account_service
 from services.config import config
 from services.proxy_service import proxy_settings
-from utils.helper import ensure_ok, iter_sse_payloads, new_uuid
+from utils.helper import ensure_ok, is_transient_connection_error_message, iter_sse_payloads, new_uuid
 from utils.log import logger
 from utils.pow import build_legacy_requirements_token, build_proof_token, parse_pow_resources
 from utils.turnstile import solve_turnstile_token
@@ -156,13 +156,7 @@ class OpenAIBackendAPI:
                     requests.exceptions.ReadTimeout,
                 ),
             )
-            or "curl: (28)" in text
-            or "curl: (35)" in text
-            or "tls connect error" in text
-            or "openssl_internal" in text
-            or "operation timed out" in text
-            or "timed out after" in text
-            or "0 bytes received" in text
+            or is_transient_connection_error_message(text)
         )
 
     def _request_with_local_retry(
@@ -201,18 +195,24 @@ class OpenAIBackendAPI:
                 return int(item.get("remaining") or 0), str(item.get("reset_after") or "") or None, False
         return 0, None, True
 
-    def _get_me(self) -> Dict[str, Any]:
+    def _get_me(self, timeout: float = 20) -> Dict[str, Any]:
         path = "/backend-api/me"
-        response = self.session.get(self.base_url + path, headers=self._headers(path), timeout=20)
+        response = self._request_with_local_retry(
+            "GET",
+            self.base_url + path,
+            headers=self._headers(path),
+            timeout=timeout,
+        )
         if response.status_code != 200:
             if response.status_code == 401:
                 raise InvalidAccessTokenError(f"{path} failed: HTTP {response.status_code}")
             raise RuntimeError(f"{path} failed: HTTP {response.status_code}")
         return response.json()
 
-    def _get_conversation_init(self) -> Dict[str, Any]:
+    def _get_conversation_init(self, timeout: float = 20) -> Dict[str, Any]:
         path = "/backend-api/conversation/init"
-        response = self.session.post(
+        response = self._request_with_local_retry(
+            "POST",
             self.base_url + path,
             headers=self._headers(path, {"Content-Type": "application/json"}),
             json={
@@ -221,7 +221,7 @@ class OpenAIBackendAPI:
                 "conversation_id": None,
                 "timezone_offset_min": -480,
             },
-            timeout=20,
+            timeout=timeout,
         )
         if response.status_code != 200:
             if response.status_code == 401:
@@ -229,10 +229,14 @@ class OpenAIBackendAPI:
             raise RuntimeError(f"{path} failed: HTTP {response.status_code}")
         return response.json()
 
-    def _get_default_account(self) -> Dict[str, Any]:
+    def _get_default_account(self, timeout: float = 20) -> Dict[str, Any]:
         route = "/backend-api/accounts/check/v4-2023-04-27"
-        response = self.session.get(self.base_url + route + "?timezone_offset_min=-480", headers=self._headers(route),
-                                    timeout=20)
+        response = self._request_with_local_retry(
+            "GET",
+            self.base_url + route + "?timezone_offset_min=-480",
+            headers=self._headers(route),
+            timeout=timeout,
+        )
         if response.status_code != 200:
             if response.status_code == 401:
                 raise InvalidAccessTokenError(f"{route} failed: HTTP {response.status_code}")
@@ -241,15 +245,16 @@ class OpenAIBackendAPI:
         logger.debug({"event": "backend_user_info_account_payload", "account_payload": payload})
         return ((payload.get("accounts") or {}).get("default") or {}).get("account") or {}
 
-    def get_user_info(self) -> Dict[str, Any]:
+    def get_user_info(self, timeout: float | None = None) -> Dict[str, Any]:
         """获取当前 token 的账号信息。"""
         if not self.access_token:
             raise RuntimeError("access_token is required")
         logger.debug({"event": "backend_user_info_start"})
+        request_timeout = timeout or 20
         with ThreadPoolExecutor(max_workers=3) as executor:
-            me_future = executor.submit(self._get_me)
-            init_future = executor.submit(self._get_conversation_init)
-            account_future = executor.submit(self._get_default_account)
+            me_future = executor.submit(self._get_me, request_timeout)
+            init_future = executor.submit(self._get_conversation_init, request_timeout)
+            account_future = executor.submit(self._get_default_account, request_timeout)
             me_payload, init_payload, default_account = me_future.result(), init_future.result(), account_future.result()
 
         plan_type = str(default_account.get("plan_type") or "free")
@@ -280,6 +285,29 @@ class OpenAIBackendAPI:
             "status": result.get("status"),
         })
         return result
+
+    def get_quota_info(self, current_account: dict[str, Any] | None = None, timeout: float | None = None) -> Dict[str, Any]:
+        """只刷新额度相关字段，避免账号池批量刷新时重复请求完整账号资料。"""
+        if not self.access_token:
+            raise RuntimeError("access_token is required")
+        account = current_account if isinstance(current_account, dict) else {}
+        request_timeout = timeout or 20
+        init_payload = self._get_conversation_init(request_timeout)
+        plan_type = str(account.get("type") or "free")
+        limits_progress = init_payload.get("limits_progress")
+        limits_progress = limits_progress if isinstance(limits_progress, list) else []
+        quota, restore_at, image_quota_unknown = self._extract_quota_and_restore_at(limits_progress)
+        return {
+            "email": account.get("email"),
+            "user_id": account.get("user_id"),
+            "type": plan_type,
+            "quota": quota,
+            "image_quota_unknown": image_quota_unknown,
+            "limits_progress": limits_progress,
+            "default_model_slug": init_payload.get("default_model_slug"),
+            "restore_at": restore_at,
+            "status": "正常" if image_quota_unknown and plan_type.lower() != "free" else ("限流" if quota == 0 else "正常"),
+        }
 
     def _bootstrap_headers(self) -> Dict[str, str]:
         """构造首页预热请求头。"""
@@ -1047,7 +1075,8 @@ class OpenAIBackendAPI:
         requirements = self._get_chat_requirements()
         path, timezone = self._chat_target()
         payload = self._conversation_payload(normalized, model, timezone)
-        response = self.session.post(
+        response = self._request_with_local_retry(
+            "POST",
             self.base_url + path,
             headers=self._conversation_headers(path, requirements),
             json=payload,
@@ -1135,7 +1164,8 @@ class OpenAIBackendAPI:
         )
         route = "/backend-api/models" if self.access_token else "/backend-anon/models"
         context = "auth_models" if self.access_token else "anon_models"
-        response = self.session.get(
+        response = self._request_with_local_retry(
+            "GET",
             self.base_url + path,
             headers=self._headers(route),
             timeout=30,

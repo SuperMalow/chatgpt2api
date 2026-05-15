@@ -13,6 +13,19 @@ from utils.log import logger
 
 IMAGE_MODELS = {"gpt-image-2", "codex-gpt-image-2"}
 OUTPUT_DIR = Path(__file__).resolve().parent / "output"
+TRANSIENT_CONNECTION_ERROR_NEEDLES = (
+    "curl: (28)",
+    "curl: (35)",
+    "curl: (56)",
+    "tls connect error",
+    "openssl_internal",
+    "operation timed out",
+    "timed out after",
+    "0 bytes received",
+    "connection closed abruptly",
+    "connection reset by peer",
+    "recv failure",
+)
 
 
 def new_uuid() -> str:
@@ -36,6 +49,11 @@ def ensure_ok(response: requests.Response, context: str) -> None:
     except Exception:
         pass
     raise RuntimeError(f"{context} failed: status={response.status_code}, body={body}")
+
+
+def is_transient_connection_error_message(message: object) -> bool:
+    text = str(message or "").lower()
+    return any(needle in text for needle in TRANSIENT_CONNECTION_ERROR_NEEDLES)
 
 
 def sse_json_stream(items) -> Iterator[str]:

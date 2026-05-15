@@ -16,7 +16,7 @@ from services.config import config
 from services.image_backends import get_image_backend_specs, is_image_backend_fallback_error
 from services.image_backends.base import ImageBackendSpec
 from services.openai_backend_api import OpenAIBackendAPI
-from utils.helper import IMAGE_MODELS, extract_image_from_message_content
+from utils.helper import IMAGE_MODELS, extract_image_from_message_content, is_transient_connection_error_message
 from utils.log import logger
 
 
@@ -60,16 +60,7 @@ def is_token_invalid_error(message: str) -> bool:
 
 def image_stream_error_message(message: str) -> str:
     text = str(message or "")
-    lower = text.lower()
-    if (
-        "curl: (35)" in lower
-        or "curl: (28)" in lower
-        or "tls connect error" in lower
-        or "openssl_internal" in lower
-        or "operation timed out" in lower
-        or "timed out after" in lower
-        or "0 bytes received" in lower
-    ):
+    if is_transient_connection_error_message(text):
         return "upstream image connection failed, please retry later"
     return text or "image generation failed"
 
@@ -590,6 +581,19 @@ def stream_text_deltas(backend: OpenAIBackendAPI, request: ConversationRequest) 
                 token = account_service.get_text_access_token(attempted_tokens)
                 if token:
                     continue
+            if is_transient_connection_error_message(error_message):
+                logger.warning({
+                    "event": "text_stream_connection_interrupted",
+                    "request_token": token,
+                    "emitted": emitted,
+                    "error": _short_text(error_message, 800),
+                })
+                if emitted:
+                    return
+                token = account_service.get_text_access_token(attempted_tokens)
+                if token:
+                    continue
+                raise RuntimeError("upstream text connection failed, please retry later") from exc
             raise
 
 
@@ -607,35 +611,46 @@ def stream_image_outputs(
     active_image_backend = image_backend or ImageBackendSpec(name="native")
     last: dict[str, Any] = {}
     request_prompt = image_backend_prompt(request.prompt, request.size, active_image_backend)
-    for event in conversation_events(
-            backend,
-            prompt=request_prompt,
-            model=request.model,
-            images=request.images or [],
-            size=None,
-            image_backend=active_image_backend,
-    ):
-        last = event
-        if event.get("type") == "conversation.delta":
-            yield ImageOutput(
-                kind="progress",
+    stream_interruption_error = ""
+    try:
+        for event in conversation_events(
+                backend,
+                prompt=request_prompt,
                 model=request.model,
-                index=index,
-                total=total,
-                text=str(event.get("delta") or ""),
-                upstream_event_type="conversation.delta",
-            )
-            continue
-        if event.get("type") == "conversation.event":
-            raw = event.get("raw")
-            raw_type = str(raw.get("type") or "") if isinstance(raw, dict) else ""
-            yield ImageOutput(
-                kind="progress",
-                model=request.model,
-                index=index,
-                total=total,
-                upstream_event_type=raw_type,
-            )
+                images=request.images or [],
+                size=None,
+                image_backend=active_image_backend,
+        ):
+            last = event
+            if event.get("type") == "conversation.delta":
+                yield ImageOutput(
+                    kind="progress",
+                    model=request.model,
+                    index=index,
+                    total=total,
+                    text=str(event.get("delta") or ""),
+                    upstream_event_type="conversation.delta",
+                )
+                continue
+            if event.get("type") == "conversation.event":
+                raw = event.get("raw")
+                raw_type = str(raw.get("type") or "") if isinstance(raw, dict) else ""
+                yield ImageOutput(
+                    kind="progress",
+                    model=request.model,
+                    index=index,
+                    total=total,
+                    upstream_event_type=raw_type,
+                )
+    except Exception as exc:
+        stream_interruption_error = str(exc)
+        has_resolution_anchor = bool(
+            last.get("conversation_id")
+            or last.get("file_ids")
+            or last.get("sediment_ids")
+        )
+        if not is_upstream_image_connection_error(stream_interruption_error) or not has_resolution_anchor:
+            raise
 
     conversation_id = str(last.get("conversation_id") or "")
     file_ids = [str(item) for item in last.get("file_ids") or []]
@@ -651,7 +666,16 @@ def stream_image_outputs(
         "sediment_ids": sediment_ids,
         "tool_invoked": last.get("tool_invoked"),
         "turn_use_case": last.get("turn_use_case"),
+        "stream_interrupted": bool(stream_interruption_error),
     })
+    if stream_interruption_error:
+        logger.warning({
+            "event": "image_stream_interrupted_resolving",
+            "conversation_id": conversation_id,
+            "file_ids": file_ids,
+            "sediment_ids": sediment_ids,
+            "error": _short_text(stream_interruption_error, 800),
+        })
     if message and not file_ids and not sediment_ids and (last.get("blocked") or is_text_response):
         yield ImageOutput(kind="message", model=request.model, index=index, total=total, text=message)
         return
@@ -732,6 +756,7 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
 
             attempted_tokens.add(token)
             emitted_for_token = False
+            terminal_emitted_for_token = False
             returned_message = False
             returned_result = False
             backend_fallbacks: list[dict[str, str]] = []
@@ -759,6 +784,7 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
                                 )
                             emitted = True
                             emitted_for_token = True
+                            terminal_emitted_for_token = terminal_emitted_for_token or output.kind in {"message", "result"}
                             returned_message = output.kind == "message"
                             returned_result = returned_result or output.kind == "result"
                             yield output
@@ -819,7 +845,7 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
                 if not emitted_for_token and is_token_invalid_error(last_error):
                     account_service.remove_invalid_token(token, "image_stream")
                     continue
-                if not emitted_for_token and is_upstream_image_connection_error(last_error):
+                if not terminal_emitted_for_token and is_upstream_image_connection_error(last_error):
                     continue
                 raise ImageGenerationError(image_stream_error_message(last_error)) from exc
 
