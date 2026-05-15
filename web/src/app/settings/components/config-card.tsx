@@ -33,6 +33,7 @@ export function ConfigCard() {
   const setSensitiveWordsText = useSettingsStore((state) => state.setSensitiveWordsText);
   const setAIReviewField = useSettingsStore((state) => state.setAIReviewField);
   const saveConfig = useSettingsStore((state) => state.saveConfig);
+  const setLimitedAccountRefreshBatchSize = useSettingsStore((state) => state.setLimitedAccountRefreshBatchSize);
 
   const handleTestProxy = async () => {
     const candidate = String(config?.proxy || "").trim();
@@ -75,14 +76,44 @@ export function ConfigCard() {
         </div>
         <div className="grid gap-4 md:grid-cols-2">
           <div className="space-y-2">
-            <label className="text-sm text-stone-700">账号刷新间隔</label>
-            <Input
-              value={String(config?.refresh_account_interval_minute || "")}
-              onChange={(event) => setRefreshAccountIntervalMinute(event.target.value)}
-              placeholder="分钟"
-              className="h-10 rounded-xl border-stone-200 bg-white"
-            />
-            <p className="text-xs text-stone-500">单位分钟，控制账号自动刷新频率。</p>
+            <label className="text-sm text-stone-700">限流账号检查间隔</label>
+            <div className="relative">
+              <Input
+                type="number"
+                min={1}
+                inputMode="numeric"
+                value={String(config?.refresh_account_interval_minute || "")}
+                onChange={(event) => setRefreshAccountIntervalMinute(event.target.value)}
+                placeholder="5"
+                className="h-10 rounded-xl border-stone-200 bg-white pr-14"
+              />
+              <span className="pointer-events-none absolute top-1/2 right-4 -translate-y-1/2 text-xs text-stone-400">
+                分钟
+              </span>
+            </div>
+            <p className="text-xs leading-5 text-stone-500">
+              定时检查限流账号并同步额度和恢复时间；不会更新 access_token / refresh_token，也不会完整刷新所有账号资料。
+            </p>
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm text-stone-700">每轮检查上限</label>
+            <div className="relative">
+              <Input
+                type="number"
+                min={1}
+                inputMode="numeric"
+                value={String(config?.limited_account_refresh_batch_size || "")}
+                onChange={(event) => setLimitedAccountRefreshBatchSize(event.target.value)}
+                placeholder="50"
+                className="h-10 rounded-xl border-stone-200 bg-white pr-12"
+              />
+              <span className="pointer-events-none absolute top-1/2 right-4 -translate-y-1/2 text-xs text-stone-400">
+                个
+              </span>
+            </div>
+            <p className="text-xs leading-5 text-stone-500">
+              限流账号数量超过上限时自动分批轮转，避免一次性请求过多账号。
+            </p>
           </div>
           <div className="space-y-2">
             <label className="text-sm text-stone-700">全局代理</label>

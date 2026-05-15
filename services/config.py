@@ -174,6 +174,10 @@ class ConfigStore:
             return 5
 
     @property
+    def limited_account_refresh_batch_size(self) -> int:
+        return _normalize_positive_int(self.data.get("limited_account_refresh_batch_size"), 50, 1)
+
+    @property
     def image_retention_days(self) -> int:
         try:
             return max(1, int(self.data.get("image_retention_days", 30)))
@@ -287,6 +291,7 @@ class ConfigStore:
     def get(self) -> dict[str, object]:
         data = dict(self.data)
         data["refresh_account_interval_minute"] = self.refresh_account_interval_minute
+        data["limited_account_refresh_batch_size"] = self.limited_account_refresh_batch_size
         data["image_retention_days"] = self.image_retention_days
         data["image_poll_timeout_secs"] = self.image_poll_timeout_secs
         data["image_account_concurrency"] = self.image_account_concurrency

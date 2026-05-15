@@ -79,18 +79,41 @@ def sanitize_sub2api_servers(servers: list[dict]) -> list[dict]:
     return [sanitized for server in servers if (sanitized := sanitize_sub2api_server(server)) is not None]
 
 
+def _select_limited_account_batch(tokens: list[str], batch_size: int, cursor: int) -> tuple[list[str], int]:
+    if not tokens:
+        return [], 0
+    safe_batch_size = max(1, int(batch_size))
+    if len(tokens) <= safe_batch_size:
+        return tokens, 0
+    start = cursor % len(tokens)
+    batch = tokens[start : start + safe_batch_size]
+    next_cursor = start + len(batch)
+    return batch, 0 if next_cursor >= len(tokens) else next_cursor
+
+
 def start_limited_account_watcher(stop_event: Event) -> Thread:
-    interval_seconds = config.refresh_account_interval_minute * 60
+    limited_cursor = 0
 
     def worker() -> None:
+        nonlocal limited_cursor
         while not stop_event.is_set():
             try:
                 limited_tokens = account_service.list_limited_tokens()
                 if limited_tokens:
-                    print(f"[account-limited-watcher] checking {len(limited_tokens)} limited accounts")
-                    account_service.refresh_accounts(limited_tokens)
+                    batch, limited_cursor = _select_limited_account_batch(
+                        limited_tokens,
+                        config.limited_account_refresh_batch_size,
+                        limited_cursor,
+                    )
+                    print(
+                        f"[account-limited-watcher] checking {len(batch)}/{len(limited_tokens)} limited accounts"
+                    )
+                    account_service.refresh_accounts(batch)
+                else:
+                    limited_cursor = 0
             except Exception as exc:
                 print(f"[account-limited-watcher] fail {exc}")
+            interval_seconds = max(1, int(config.refresh_account_interval_minute)) * 60
             stop_event.wait(interval_seconds)
 
     thread = Thread(target=worker, name="limited-account-watcher", daemon=True)
