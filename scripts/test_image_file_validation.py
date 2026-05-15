@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import io
+import os
 import sys
 import unittest
 import uuid
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
@@ -39,6 +41,16 @@ def make_root() -> Path:
     return root
 
 
+def write_test_image(config: FakeImageConfig, name: str, offset_seconds: int) -> str:
+    day_dir = config.images_dir / "2026" / "05" / "15"
+    day_dir.mkdir(parents=True, exist_ok=True)
+    path = day_dir / name
+    path.write_bytes(png_1x1())
+    timestamp = datetime(2026, 5, 15, 12, 0, 0).timestamp() + offset_seconds
+    os.utime(path, (timestamp, timestamp))
+    return path.relative_to(config.images_dir).as_posix()
+
+
 class ImageFileValidationTests(unittest.TestCase):
     def test_image_listing_skips_files_that_are_not_real_images(self) -> None:
         config = FakeImageConfig(make_root())
@@ -54,6 +66,43 @@ class ImageFileValidationTests(unittest.TestCase):
             result = image_service.list_images("http://testserver")
 
         self.assertEqual([item["name"] for item in result["items"]], ["valid.png"])
+        self.assertEqual(result["total"], 1)
+
+    def test_image_listing_returns_requested_page_with_full_summary(self) -> None:
+        config = FakeImageConfig(make_root())
+        for index in range(5):
+            write_test_image(config, f"image-{index}.png", index)
+
+        with (
+            mock.patch.object(image_service, "config", config),
+            mock.patch.object(image_service, "load_tags", return_value={}),
+        ):
+            result = image_service.list_images("http://testserver", page=2, page_size=2)
+
+        self.assertEqual([item["name"] for item in result["items"]], ["image-2.png", "image-1.png"])
+        self.assertEqual(result["total"], 5)
+        self.assertEqual(result["page"], 2)
+        self.assertEqual(result["page_size"], 2)
+        self.assertEqual(result["pages"], 3)
+        self.assertEqual(result["summary"]["total"], 5)
+
+    def test_image_listing_filters_tags_before_pagination_and_keeps_summary_global(self) -> None:
+        config = FakeImageConfig(make_root())
+        keep_newer = write_test_image(config, "keep-newer.png", 3)
+        write_test_image(config, "skip-newer.png", 2)
+        keep_older = write_test_image(config, "keep-older.png", 1)
+        write_test_image(config, "skip-older.png", 0)
+
+        with (
+            mock.patch.object(image_service, "config", config),
+            mock.patch.object(image_service, "load_tags", return_value={keep_newer: ["keep"], keep_older: ["keep"]}),
+        ):
+            result = image_service.list_images("http://testserver", page=1, page_size=1, tags=["keep"])
+
+        self.assertEqual([item["name"] for item in result["items"]], ["keep-newer.png"])
+        self.assertEqual(result["total"], 2)
+        self.assertEqual(result["pages"], 2)
+        self.assertEqual(result["summary"]["total"], 4)
 
     def test_save_image_bytes_rejects_non_image_bytes(self) -> None:
         config = FakeImageConfig(make_root())

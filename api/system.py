@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict
@@ -10,7 +10,15 @@ from pydantic import BaseModel, ConfigDict
 from api.support import require_admin, require_identity, resolve_image_base_url
 from services.backup_service import BackupError, backup_service
 from services.config import config
-from services.image_service import delete_images, download_images_zip, get_image_download_response, get_thumbnail_response, list_images
+from services.image_service import (
+    DEFAULT_IMAGE_PAGE_SIZE,
+    MAX_IMAGE_PAGE_SIZE,
+    delete_images,
+    download_images_zip,
+    get_image_download_response,
+    get_thumbnail_response,
+    list_images,
+)
 from services.image_tags_service import delete_tag, get_all_tags, set_tags
 from services.log_service import log_service
 from services.proxy_service import test_proxy
@@ -72,9 +80,25 @@ def create_router(app_version: str) -> APIRouter:
         return {"config": config.update(body.model_dump(mode="python"))}
 
     @router.get("/api/images")
-    async def get_images(request: Request, start_date: str = "", end_date: str = "", authorization: str | None = Header(default=None)):
+    async def get_images(
+        request: Request,
+        start_date: str = "",
+        end_date: str = "",
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=DEFAULT_IMAGE_PAGE_SIZE, ge=1, le=MAX_IMAGE_PAGE_SIZE),
+        tags: list[str] | None = Query(default=None),
+        authorization: str | None = Header(default=None),
+    ):
         require_admin(authorization)
-        return list_images(resolve_image_base_url(request), start_date=start_date.strip(), end_date=end_date.strip())
+        return await run_in_threadpool(
+            list_images,
+            resolve_image_base_url(request),
+            start_date=start_date.strip(),
+            end_date=end_date.strip(),
+            page=page,
+            page_size=page_size,
+            tags=tags or [],
+        )
 
     @router.get("/image-thumbnails/{image_path:path}", include_in_schema=False)
     async def get_image_thumbnail(image_path: str):

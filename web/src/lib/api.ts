@@ -180,6 +180,15 @@ export type ManagedImage = {
   tags?: string[];
 };
 
+export type ManagedImageSummary = {
+  total: number;
+  date_total: number;
+  filtered: number;
+  size: number;
+  date_size: number;
+  filtered_size: number;
+};
+
 export type SystemLog = {
   id: string;
   time: string;
@@ -664,13 +673,27 @@ export function getBackupDownloadUrl(key: string) {
 export async function fetchManagedImages(filters: {
   start_date?: string;
   end_date?: string;
+  page?: number;
+  pageSize?: number;
+  tags?: string[];
 }) {
   const params = new URLSearchParams();
   if (filters.start_date) params.set("start_date", filters.start_date);
   if (filters.end_date) params.set("end_date", filters.end_date);
+  if (filters.page) params.set("page", String(filters.page));
+  if (filters.pageSize) params.set("page_size", String(filters.pageSize));
+  filters.tags?.forEach((tag) => {
+    if (tag.trim()) params.append("tags", tag.trim());
+  });
   return httpRequest<{
     items: ManagedImage[];
     groups: Array<{ date: string; items: ManagedImage[] }>;
+    total: number;
+    page: number;
+    page_size: number;
+    pages: number;
+    summary: ManagedImageSummary;
+    selected_tags: string[];
   }>(`/api/images${params.toString() ? `?${params.toString()}` : ""}`);
 }
 
