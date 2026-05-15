@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 import re
 import time
@@ -10,6 +11,7 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator
 
 import tiktoken
+from PIL import Image
 
 from services.account_service import account_service
 from services.config import config
@@ -127,6 +129,12 @@ def encode_images(images: Iterable[tuple[bytes, str, str]]) -> list[str]:
 
 
 def save_image_bytes(image_data: bytes, base_url: str | None = None) -> str:
+    try:
+        with Image.open(io.BytesIO(image_data)) as image:
+            image.verify()
+    except Exception as exc:
+        raise ValueError("image_data is not a valid image") from exc
+
     config.cleanup_old_images()
     file_hash = hashlib.md5(image_data).hexdigest()
     filename = f"{int(time.time())}_{file_hash}.png"

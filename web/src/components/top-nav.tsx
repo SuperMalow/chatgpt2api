@@ -6,7 +6,7 @@ import { Github } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 
 import webConfig from "@/constants/common-env";
-import { getValidatedAuthSession } from "@/lib/auth-session";
+import { clearValidatedAuthSessionCache, getValidatedAuthSession } from "@/lib/auth-session";
 import { cn } from "@/lib/utils";
 import { clearStoredAuthSession, type StoredAuthSession } from "@/store/auth";
 
@@ -52,6 +52,7 @@ export function TopNav() {
   }, [pathname]);
 
   const handleLogout = async () => {
+    clearValidatedAuthSessionCache();
     await clearStoredAuthSession();
     router.replace("/login");
   };

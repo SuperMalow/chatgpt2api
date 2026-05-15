@@ -58,7 +58,9 @@ def thumbnail_url(base_url: str, relative_path: str) -> str:
 def _image_dimensions(path: Path) -> tuple[int, int] | None:
     try:
         with Image.open(path) as image:
-            return image.size
+            dimensions = image.size
+            image.verify()
+            return dimensions
     except Exception:
         return None
 
@@ -123,6 +125,8 @@ def _image_items(start_date: str = "", end_date: str = "") -> list[dict[str, obj
         if end_date and day > end_date:
             continue
         dimensions = _image_dimensions(path)
+        if dimensions is None:
+            continue
         items.append({
             "rel": rel,
             "path": rel,
@@ -130,7 +134,8 @@ def _image_items(start_date: str = "", end_date: str = "") -> list[dict[str, obj
             "date": day,
             "size": path.stat().st_size,
             "created_at": datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
-            **({"width": dimensions[0], "height": dimensions[1]} if dimensions else {}),
+            "width": dimensions[0],
+            "height": dimensions[1],
         })
     items.sort(key=lambda item: str(item["created_at"]), reverse=True)
     return items

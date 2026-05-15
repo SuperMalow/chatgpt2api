@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { login } from "@/lib/api";
+import { primeValidatedAuthSession } from "@/lib/auth-session";
 import { useRedirectIfAuthenticated } from "@/lib/use-auth-guard";
 import { getDefaultRouteForRole, setStoredAuthSession } from "@/store/auth";
 
@@ -28,12 +29,14 @@ export default function LoginPage() {
     setIsSubmitting(true);
     try {
       const data = await login(normalizedAuthKey);
-      await setStoredAuthSession({
+      const session = {
         key: normalizedAuthKey,
         role: data.role,
         subjectId: data.subject_id,
         name: data.name,
-      });
+      };
+      await setStoredAuthSession(session);
+      primeValidatedAuthSession(session);
       router.replace(getDefaultRouteForRole(data.role));
     } catch (error) {
       const message = error instanceof Error ? error.message : "登录失败";

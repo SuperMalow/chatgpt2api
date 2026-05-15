@@ -1054,6 +1054,11 @@ class OpenAIBackendAPI:
         for url in urls:
             response = self._request_with_local_retry("GET", url, timeout=120)
             ensure_ok(response, "image_download")
+            try:
+                with Image.open(BytesIO(response.content)) as image:
+                    image.verify()
+            except Exception as exc:
+                raise RuntimeError("image_download returned non-image content") from exc
             images.append(response.content)
         return images
 
