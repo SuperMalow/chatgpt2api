@@ -4,8 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 
-import webConfig from "@/constants/common-env";
-import { clearValidatedAuthSessionCache, getValidatedAuthSession } from "@/lib/auth-session";
+import { clearValidatedAuthSessionCache, getValidatedAuthSession, getValidatedAuthSessionSnapshot } from "@/lib/auth-session";
 import { cn } from "@/lib/utils";
 import { clearStoredAuthSession, type StoredAuthSession } from "@/store/auth";
 
@@ -23,7 +22,9 @@ const userNavItems = [{ href: "/image", label: "画图" }];
 export function TopNav() {
   const pathname = usePathname();
   const router = useRouter();
-  const [session, setSession] = useState<StoredAuthSession | null | undefined>(undefined);
+  const [session, setSession] = useState<StoredAuthSession | null | undefined>(() =>
+    pathname === "/login" ? null : (getValidatedAuthSessionSnapshot() ?? undefined),
+  );
 
   useEffect(() => {
     let active = true;

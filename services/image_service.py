@@ -280,12 +280,8 @@ def list_images(
         for item in page_records
         if (public_item := _public_image_item(item, base_url, all_tags)) is not None
     ]
-    groups: dict[str, list[dict[str, object]]] = {}
-    for item in items:
-        groups.setdefault(str(item["date"]), []).append(item)
     return {
         "items": items,
-        "groups": [{"date": key, "items": value} for key, value in groups.items()],
         "total": total,
         "page": page,
         "page_size": page_size,

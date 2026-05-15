@@ -687,7 +687,6 @@ export async function fetchManagedImages(filters: {
   });
   return httpRequest<{
     items: ManagedImage[];
-    groups: Array<{ date: string; items: ManagedImage[] }>;
     total: number;
     page: number;
     page_size: number;
@@ -765,12 +764,22 @@ export async function fetchSystemLogs(filters: {
   type?: string;
   start_date?: string;
   end_date?: string;
+  page?: number;
+  pageSize?: number;
 }) {
   const params = new URLSearchParams();
   if (filters.type) params.set("type", filters.type);
   if (filters.start_date) params.set("start_date", filters.start_date);
   if (filters.end_date) params.set("end_date", filters.end_date);
-  return httpRequest<{ items: SystemLog[] }>(
+  if (filters.page) params.set("page", String(filters.page));
+  if (filters.pageSize) params.set("page_size", String(filters.pageSize));
+  return httpRequest<{
+    items: SystemLog[];
+    total: number;
+    page: number;
+    page_size: number;
+    pages: number;
+  }>(
     `/api/logs${params.toString() ? `?${params.toString()}` : ""}`,
   );
 }

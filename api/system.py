@@ -20,7 +20,7 @@ from services.image_service import (
     list_images,
 )
 from services.image_tags_service import delete_tag, get_all_tags, set_tags
-from services.log_service import log_service
+from services.log_service import DEFAULT_LOG_PAGE_SIZE, MAX_LOG_PAGE_SIZE, log_service
 from services.proxy_service import test_proxy
 
 
@@ -125,9 +125,23 @@ def create_router(app_version: str) -> APIRouter:
         return get_image_download_response(image_path)
 
     @router.get("/api/logs")
-    async def get_logs(type: str = "", start_date: str = "", end_date: str = "", authorization: str | None = Header(default=None)):
+    async def get_logs(
+        type: str = "",
+        start_date: str = "",
+        end_date: str = "",
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=DEFAULT_LOG_PAGE_SIZE, ge=1, le=MAX_LOG_PAGE_SIZE),
+        authorization: str | None = Header(default=None),
+    ):
         require_admin(authorization)
-        return {"items": log_service.list(type=type.strip(), start_date=start_date.strip(), end_date=end_date.strip())}
+        return await run_in_threadpool(
+            log_service.list_page,
+            type=type.strip(),
+            start_date=start_date.strip(),
+            end_date=end_date.strip(),
+            page=page,
+            page_size=page_size,
+        )
 
     @router.post("/api/logs/delete")
     async def delete_logs(body: LogDeleteRequest, authorization: str | None = Header(default=None)):

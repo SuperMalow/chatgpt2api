@@ -4,6 +4,8 @@ import hashlib
 import json
 import itertools
 import time
+from collections import deque
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +21,8 @@ from utils.helper import anthropic_sse_stream, sse_json_stream
 
 LOG_TYPE_CALL = "call"
 LOG_TYPE_ACCOUNT = "account"
+DEFAULT_LOG_PAGE_SIZE = 20
+MAX_LOG_PAGE_SIZE = 100
 
 
 class LogService:
@@ -69,21 +73,107 @@ class LogService:
         with self.path.open("a", encoding="utf-8") as file:
             file.write(self._serialize_item(item) + "\n")
 
+    @staticmethod
+    def _normalize_page(page: int, page_size: int, max_page_size: int | None = MAX_LOG_PAGE_SIZE) -> tuple[int, int]:
+        page_size = max(1, int(page_size or DEFAULT_LOG_PAGE_SIZE))
+        if max_page_size is not None:
+            page_size = min(max_page_size, page_size)
+        page = max(1, int(page or 1))
+        return page, page_size
+
+    def _iter_items(self) -> Iterator[dict[str, Any]]:
+        if not self.path.exists():
+            return
+        with self.path.open("r", encoding="utf-8") as file:
+            for line_number, raw_line in enumerate(file):
+                item = self._parse_line(raw_line.rstrip("\r\n"), line_number)
+                if item is not None:
+                    yield item
+
+    def _count_matches(self, *, type: str = "", start_date: str = "", end_date: str = "") -> int:
+        total = 0
+        for item in self._iter_items():
+            if self._matches_filters(item, type=type, start_date=start_date, end_date=end_date):
+                total += 1
+        return total
+
+    def _collect_page_items(
+        self,
+        *,
+        type: str = "",
+        start_date: str = "",
+        end_date: str = "",
+        start: int = 0,
+        page_size: int = DEFAULT_LOG_PAGE_SIZE,
+    ) -> list[dict[str, Any]]:
+        end = start + page_size
+        recent_items: deque[dict[str, Any]] = deque(maxlen=end)
+        for item in self._iter_items():
+            if not self._matches_filters(item, type=type, start_date=start_date, end_date=end_date):
+                continue
+            recent_items.append(item)
+        return list(reversed(recent_items))[start:end]
+
+    def _list_page(
+        self,
+        *,
+        type: str = "",
+        start_date: str = "",
+        end_date: str = "",
+        page: int = 1,
+        page_size: int = DEFAULT_LOG_PAGE_SIZE,
+        max_page_size: int | None = MAX_LOG_PAGE_SIZE,
+    ) -> dict[str, Any]:
+        page, page_size = self._normalize_page(page, page_size, max_page_size)
+        if not self.path.exists():
+            return {"items": [], "total": 0, "page": 1, "page_size": page_size, "pages": 1}
+
+        total = self._count_matches(type=type, start_date=start_date, end_date=end_date)
+        pages = max(1, (total + page_size - 1) // page_size)
+        safe_page = min(page, pages)
+        items = self._collect_page_items(
+            type=type,
+            start_date=start_date,
+            end_date=end_date,
+            start=(safe_page - 1) * page_size,
+            page_size=page_size,
+        )
+        return {
+            "items": items,
+            "total": total,
+            "page": safe_page,
+            "page_size": page_size,
+            "pages": pages,
+        }
+
+    def list_page(
+        self,
+        type: str = "",
+        start_date: str = "",
+        end_date: str = "",
+        page: int = 1,
+        page_size: int = DEFAULT_LOG_PAGE_SIZE,
+    ) -> dict[str, Any]:
+        return self._list_page(
+            type=type,
+            start_date=start_date,
+            end_date=end_date,
+            page=page,
+            page_size=page_size,
+            max_page_size=MAX_LOG_PAGE_SIZE,
+        )
+
     def list(self, type: str = "", start_date: str = "", end_date: str = "", limit: int = 200) -> list[dict[str, Any]]:
         if not self.path.exists():
             return []
-        items: list[dict[str, Any]] = []
-        lines = self.path.read_text(encoding="utf-8").splitlines()
-        for line_number in range(len(lines) - 1, -1, -1):
-            item = self._parse_line(lines[line_number], line_number)
-            if item is None:
-                continue
-            if not self._matches_filters(item, type=type, start_date=start_date, end_date=end_date):
-                continue
-            items.append(item)
-            if len(items) >= limit:
-                break
-        return items
+        return self._list_page(
+            type=type,
+            start_date=start_date,
+            end_date=end_date,
+            page=1,
+            page_size=limit,
+            max_page_size=None,
+        )["items"]
 
     def delete(self, ids: list[str]) -> dict[str, int]:
         target_ids = {str(item or "").strip() for item in ids if str(item or "").strip()}

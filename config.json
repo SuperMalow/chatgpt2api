@@ -1,6 +1,6 @@
 {
   "auth-key": "chatgpt2api",
-  "refresh_account_interval_minute": 300,
+  "refresh_account_interval_minute": 321,
   "image_retention_days": 15,
   "image_poll_timeout_secs": 120,
   "auto_remove_rate_limited_accounts": false,
@@ -46,5 +46,8 @@
       "images": false
     }
   },
-  "image_account_concurrency": 1
+  "image_account_concurrency": 1,
+  "limited_account_refresh_batch_size": 50,
+  "image_backend_default": "native",
+  "image_backend_fallback_enabled": true
 }

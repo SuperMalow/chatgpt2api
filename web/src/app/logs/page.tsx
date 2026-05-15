@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, ImageIcon, LoaderCircle, RefreshCw, Search, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -59,6 +59,7 @@ function formatStructuredDetail(value: unknown) {
 }
 
 function LogsContent() {
+  const loadSeqRef = useRef(0);
   const [items, setItems] = useState<SystemLog[]>([]);
   const [type, setType] = useState<string>(LogType.All);
   const [startDate, setStartDate] = useState("");
@@ -68,6 +69,9 @@ function LogsContent() {
   const [lightboxIndex, setLightboxIndex] = useState(0);
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState("10");
+  const [pageCount, setPageCount] = useState(1);
+  const [logTotal, setLogTotal] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [isDeleting, setIsDeleting] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -78,31 +82,66 @@ function LogsContent() {
   const scalarDetailEntries = detailEntries.filter(([, value]) => !isStructuredDetailValue(value));
   const structuredDetailEntries = detailEntries.filter(([key, value]) => key !== "urls" && isStructuredDetailValue(value));
   const showCallColumns = type !== LogType.Account;
-  const pageSize = 10;
-  const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
   const safePage = Math.min(page, pageCount);
-  const currentRows = items.slice((safePage - 1) * pageSize, safePage * pageSize);
+  const pageSizeValue = Number(pageSize);
+  const startIndex = (safePage - 1) * pageSizeValue;
+  const currentRows = items;
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const currentPageSelected = currentRows.length > 0 && currentRows.every((item) => selectedSet.has(item.id));
-  const allSelected = items.length > 0 && items.every((item) => selectedSet.has(item.id));
+  const paginationItems = useMemo(() => {
+    const pages: (number | "...")[] = [];
+    const start = Math.max(1, safePage - 1);
+    const end = Math.min(pageCount, safePage + 1);
 
-  const loadLogs = async () => {
-    setIsLoading(true);
+    if (start > 1) pages.push(1);
+    if (start > 2) pages.push("...");
+    for (let current = start; current <= end; current += 1) pages.push(current);
+    if (end < pageCount - 1) pages.push("...");
+    if (end < pageCount) pages.push(pageCount);
+
+    return pages;
+  }, [pageCount, safePage]);
+
+  const loadLogs = useCallback(async (silent = false, pageOverride?: number) => {
+    const requestId = loadSeqRef.current + 1;
+    loadSeqRef.current = requestId;
+    if (!silent) {
+      setIsLoading(true);
+    }
     try {
-      const data = await fetchSystemLogs({ type: type === LogType.All ? undefined : type, start_date: startDate, end_date: endDate });
+      const data = await fetchSystemLogs({
+        type: type === LogType.All ? undefined : type,
+        start_date: startDate,
+        end_date: endDate,
+        page: pageOverride ?? page,
+        pageSize: pageSizeValue,
+      });
+      if (requestId !== loadSeqRef.current) {
+        return;
+      }
       setItems(data.items);
+      setLogTotal(data.total ?? data.items.length);
+      setPageCount(data.pages ?? 1);
+      if (data.page && data.page !== page) {
+        setPage(data.page);
+      }
       setSelectedIds((current) => current.filter((id) => data.items.some((item) => item.id === id)));
-      setPage(1);
     } catch (error) {
+      if (requestId !== loadSeqRef.current) {
+        return;
+      }
       toast.error(error instanceof Error ? error.message : "加载日志失败");
     } finally {
-      setIsLoading(false);
+      if (requestId === loadSeqRef.current) {
+        setIsLoading(false);
+      }
     }
-  };
+  }, [endDate, page, pageSizeValue, startDate, type]);
 
   const clearFilters = () => {
     setStartDate("");
     setEndDate("");
+    setPage(1);
   };
 
   const openDetail = (item: SystemLog) => {
@@ -133,7 +172,7 @@ function LogsContent() {
         setDetailOpen(false);
         setDetailLog(null);
       }
-      await loadLogs();
+      await loadLogs(true);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "删除日志失败");
     } finally {
@@ -142,8 +181,11 @@ function LogsContent() {
   };
 
   useEffect(() => {
-    void loadLogs();
-  }, [type, startDate, endDate]);
+    const timer = window.setTimeout(() => {
+      void loadLogs();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [loadLogs]);
 
   return (
     <section className="space-y-5">
@@ -153,7 +195,13 @@ function LogsContent() {
           <h1 className="text-2xl font-semibold tracking-tight">日志管理</h1>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Select value={type} onValueChange={setType}>
+          <Select
+            value={type}
+            onValueChange={(value) => {
+              setType(value);
+              setPage(1);
+            }}
+          >
             <SelectTrigger className="h-10 w-[150px] rounded-xl border-stone-200 bg-white"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value={LogType.All}>全部日志</SelectItem>
@@ -161,7 +209,7 @@ function LogsContent() {
               <SelectItem value={LogType.Account}>账号管理日志</SelectItem>
             </SelectContent>
           </Select>
-          <DateRangeFilter startDate={startDate} endDate={endDate} onChange={(start, end) => { setStartDate(start); setEndDate(end); }} />
+          <DateRangeFilter startDate={startDate} endDate={endDate} onChange={(start, end) => { setStartDate(start); setEndDate(end); setPage(1); }} />
           <Button variant="outline" onClick={clearFilters} className="h-10 rounded-xl border-stone-200 bg-white px-4 text-stone-700">
             清除筛选条件
           </Button>
@@ -176,14 +224,10 @@ function LogsContent() {
         <CardContent className="p-0">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-stone-100 px-5 py-4">
             <div className="flex flex-wrap items-center gap-3 text-sm text-stone-600">
-              <span>共 {items.length} 条</span>
+              <span>共 {logTotal} 条</span>
               <label className="flex items-center gap-2">
                 <Checkbox checked={currentPageSelected} onCheckedChange={(checked) => toggleIds(currentRows.map((item) => item.id), Boolean(checked))} />
                 本页全选
-              </label>
-              <label className="flex items-center gap-2">
-                <Checkbox checked={allSelected} onCheckedChange={(checked) => toggleIds(items.map((item) => item.id), Boolean(checked))} />
-                全选结果
               </label>
               {selectedIds.length > 0 ? <span>已选 {selectedIds.length} 条</span> : null}
             </div>
@@ -195,7 +239,7 @@ function LogsContent() {
               <button type="button" className="text-sm text-stone-500 hover:text-stone-900 disabled:text-stone-300" onClick={() => setSelectedIds([])} disabled={selectedIds.length === 0 || isDeleting}>
                 取消选择
               </button>
-              <Button variant="outline" className="h-8 rounded-lg border-rose-200 bg-white px-3 text-rose-600 hover:bg-rose-50" onClick={() => setDeletingItems(items.filter((item) => selectedSet.has(item.id)))} disabled={selectedIds.length === 0 || isDeleting}>
+              <Button variant="outline" className="h-8 rounded-lg border-rose-200 bg-white px-3 text-rose-600 hover:bg-rose-50" onClick={() => setDeletingItems(currentRows.filter((item) => selectedSet.has(item.id)))} disabled={selectedIds.length === 0 || isDeleting}>
                 <Trash2 className="size-4" />
                 删除所选
               </Button>
@@ -280,16 +324,58 @@ function LogsContent() {
               </TableBody>
             </Table>
           </div>
-          <div className="flex items-center justify-end gap-2 border-t border-stone-100 px-4 py-3 text-sm text-stone-500">
-            <span>第 {safePage} / {pageCount} 页，共 {items.length} 条</span>
-            <Button variant="outline" size="icon" className="size-9 rounded-lg border-stone-200 bg-white" disabled={safePage <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>
+          <div className="flex items-center justify-center gap-3 overflow-x-auto border-t border-stone-100 px-4 py-3 text-sm text-stone-500 whitespace-nowrap">
+            <span className="shrink-0">
+              显示第 {logTotal === 0 ? 0 : startIndex + 1} - {Math.min(startIndex + currentRows.length, logTotal)} 条，共 {logTotal} 条
+            </span>
+            <span className="shrink-0">
+              {safePage} / {pageCount} 页
+            </span>
+            <Select
+              value={pageSize}
+              onValueChange={(value) => {
+                setPageSize(value);
+                setPage(1);
+              }}
+            >
+              <SelectTrigger className="h-9 w-[108px] shrink-0 rounded-lg border-stone-200 bg-white text-sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="10">10 / 页</SelectItem>
+                <SelectItem value="20">20 / 页</SelectItem>
+                <SelectItem value="50">50 / 页</SelectItem>
+                <SelectItem value="100">100 / 页</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button variant="outline" size="icon" className="size-9 shrink-0 rounded-lg border-stone-200 bg-white" disabled={safePage <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>
               <ChevronLeft className="size-4" />
             </Button>
-            <Button variant="outline" size="icon" className="size-9 rounded-lg border-stone-200 bg-white" disabled={safePage >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>
+            {paginationItems.map((item, index) =>
+              item === "..." ? (
+                <span key={`ellipsis-${index}`} className="px-1 text-sm text-stone-400">
+                  ...
+                </span>
+              ) : (
+                <Button
+                  key={item}
+                  variant={item === safePage ? "default" : "outline"}
+                  className={
+                    item === safePage
+                      ? "h-9 min-w-9 shrink-0 rounded-lg bg-stone-950 px-3 text-white hover:bg-stone-800"
+                      : "h-9 min-w-9 shrink-0 rounded-lg border-stone-200 bg-white px-3 text-stone-700"
+                  }
+                  onClick={() => setPage(item)}
+                >
+                  {item}
+                </Button>
+              ),
+            )}
+            <Button variant="outline" size="icon" className="size-9 shrink-0 rounded-lg border-stone-200 bg-white" disabled={safePage >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>
               <ChevronRight className="size-4" />
             </Button>
           </div>
-          {!isLoading && items.length === 0 ? <div className="px-6 py-14 text-center text-sm text-stone-500">没有找到日志</div> : null}
+          {!isLoading && currentRows.length === 0 ? <div className="px-6 py-14 text-center text-sm text-stone-500">没有找到日志</div> : null}
         </CardContent>
       </Card>
       <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
