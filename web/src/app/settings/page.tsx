@@ -5,7 +5,6 @@ import { LoaderCircle } from "lucide-react";
 
 import { useAuthGuard } from "@/lib/use-auth-guard";
 
-import { BackupSettingsCard } from "./components/backup-settings-card";
 import { ConfigCard } from "./components/config-card";
 import { CPAPoolDialog } from "./components/cpa-pool-dialog";
 import { CPAPoolsCard } from "./components/cpa-pools-card";
@@ -19,9 +18,7 @@ function SettingsDataController() {
   const didLoadRef = useRef(false);
   const initialize = useSettingsStore((state) => state.initialize);
   const loadPools = useSettingsStore((state) => state.loadPools);
-  const loadBackups = useSettingsStore((state) => state.loadBackups);
   const pools = useSettingsStore((state) => state.pools);
-  const backupState = useSettingsStore((state) => state.backupState);
 
   useEffect(() => {
     if (didLoadRef.current) {
@@ -46,16 +43,6 @@ function SettingsDataController() {
     return () => window.clearInterval(timer);
   }, [loadPools, pools]);
 
-  useEffect(() => {
-    if (!backupState?.running) {
-      return;
-    }
-    const timer = window.setInterval(() => {
-      void loadBackups(true);
-    }, 3000);
-    return () => window.clearInterval(timer);
-  }, [backupState?.running, loadBackups]);
-
   return null;
 }
 
@@ -66,7 +53,6 @@ function SettingsPageContent() {
       <SettingsHeader />
       <section className="space-y-6">
         <ConfigCard />
-        <BackupSettingsCard />
         <UserKeysCard />
         <CPAPoolsCard />
         <Sub2APIConnections />

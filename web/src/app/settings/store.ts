@@ -66,7 +66,7 @@ function normalizeConfig(config: SettingsConfig): SettingsConfig {
     refresh_account_interval_minute: Number(config.refresh_account_interval_minute || 5),
     image_retention_days: Number(config.image_retention_days || 30),
     image_poll_timeout_secs: Number(config.image_poll_timeout_secs || 120),
-    image_account_concurrency: Number(config.image_account_concurrency || 3),
+    image_account_concurrency: Number(config.image_account_concurrency || 1),
     auto_remove_invalid_accounts: Boolean(config.auto_remove_invalid_accounts),
     auto_remove_rate_limited_accounts: Boolean(config.auto_remove_rate_limited_accounts),
     log_levels: Array.isArray(config.log_levels) ? config.log_levels : [],
@@ -261,18 +261,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   initialize: async () => {
     await Promise.allSettled([get().loadConfig(), get().loadPools()]);
-    const backup = get().config?.backup;
-    const isConfigured = Boolean(
-      String(backup?.account_id || "").trim()
-      && String(backup?.access_key_id || "").trim()
-      && String(backup?.secret_access_key || "").trim()
-      && String(backup?.bucket || "").trim(),
-    );
-    if (isConfigured) {
-      await get().loadBackups();
-    } else {
-      set({ backups: [], isLoadingBackups: false });
-    }
+    set({ backups: [], isLoadingBackups: false });
   },
 
   loadConfig: async () => {
@@ -303,7 +292,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         refresh_account_interval_minute: Math.max(1, Number(config.refresh_account_interval_minute) || 1),
         image_retention_days: Math.max(1, Number(config.image_retention_days) || 30),
         image_poll_timeout_secs: Math.max(1, Number(config.image_poll_timeout_secs) || 120),
-        image_account_concurrency: Math.max(1, Number(config.image_account_concurrency) || 3),
+        image_account_concurrency: Math.max(1, Number(config.image_account_concurrency) || 1),
         auto_remove_invalid_accounts: Boolean(config.auto_remove_invalid_accounts),
         auto_remove_rate_limited_accounts: Boolean(config.auto_remove_rate_limited_accounts),
         proxy: config.proxy.trim(),

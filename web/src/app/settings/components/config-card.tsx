@@ -160,7 +160,7 @@ export function ConfigCard() {
               placeholder="1"
               className="h-10 rounded-xl border-stone-200 bg-white"
             />
-            <p className="text-xs text-stone-500">限制每个账号同时处理的图片请求数量，默认 3。</p>
+            <p className="text-xs text-stone-500">限制每个账号同时处理的图片请求数量，默认 1。</p>
           </div>
           <label className="flex items-center gap-3 rounded-xl border border-stone-200 bg-white px-4 py-3 text-sm text-stone-700">
             <Checkbox
